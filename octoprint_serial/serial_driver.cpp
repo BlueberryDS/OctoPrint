@@ -147,7 +147,6 @@ class InputSourceManager {
 
 std::deque<std::string> commandQueue;
 bool running = true;
-bool xon = true;
 const size_t maxQueueSize = 300;
 const size_t maxOutstandingCommands = 60;
 size_t lineNumber = 0;
@@ -190,11 +189,6 @@ void readSerialResponse(SerialPort& serialPort) {
         if (response.find("ok") != std::string::npos) {
             commandsAcknowledged++;
         }
-        if (response.find("XOFF") != std::string::npos) {
-            xon = false;
-        } else if (response.find("XON") != std::string::npos) {
-            xon = true;
-        }
         std::smatch match;
         std::regex resendRegex("Resend (\\d+)");
         if (std::regex_search(response, match, resendRegex)) {
@@ -229,7 +223,7 @@ int main(int argc, char* argv[]) {
 
     cursor = commandQueue.begin();
     cursorLineNumber = 0;
-    int commandsSentLast = 0;
+    int commandsSentLast = -1;
     while (running) {
         if (commandsSent > commandsSentLast) {          
             commandsSentLast = commandsSent;
@@ -248,7 +242,7 @@ int main(int argc, char* argv[]) {
             serialPort.configure(true);
         }
 
-        while (cursor != commandQueue.end() && xon && (commandsSent - commandsAcknowledged < maxOutstandingCommands)) {
+        while (cursor != commandQueue.end() && (commandsSent - commandsAcknowledged < maxOutstandingCommands)) {
             serialPort.configure(false);
             std::string& command = *cursor;
             ssize_t bytes_written = serialPort.writeData(command);
