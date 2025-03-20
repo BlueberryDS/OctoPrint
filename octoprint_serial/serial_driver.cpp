@@ -86,10 +86,11 @@ class InputSourceManager {
         std::vector<std::unique_ptr<std::istream>> streams;
         std::vector<std::string> names;
         size_t currentIndex = 0;
+        bool interactive;
     
     public:
         // Modified constructor to handle both interactive and file-based input
-    InputSourceManager(const std::string& source, bool interactive) {
+    InputSourceManager(const std::string& source, bool interactive): interactive(interactive) {
         if (interactive) {
             streams.emplace_back(&std::cin);
             names.push_back("stdin");
@@ -110,34 +111,49 @@ class InputSourceManager {
         return !streams.empty() && streams[0]->good();
     }
     
-        bool getNextLine(std::string& line) {
-            while (!streams.empty()) {
-                if (std::getline(*streams[currentIndex], line)) {
-                    if (line.find("OpenFile ") == 0) {
-                        std::string filename = line.substr(9);
-                        auto newFile = std::make_unique<std::ifstream>(filename);
-                        if (newFile->good()) {
-                            streams.push_back(std::move(newFile));
-                            names.push_back(filename);
-                            std::cout << "Opened file: " << filename << std::endl;
-                        } else {
-                            std::cerr << "Failed to open file: " << filename << std::endl;
-                        }
-                        return getNextLine(line); // Skip OpenFile command
-                    }
-                    rotate();
-                    return true;
-                }
-                // Remove exhausted stream if it's not the primary (index 0)
-                if (currentIndex > 0) {
-                    streams.erase(streams.begin() + currentIndex);
-                    names.erase(names.begin() + currentIndex);
-                } else {
-                    rotate();
-                }
+    bool getNextLine(std::string& line) {
+        while (!streams.empty()) {
+            rotate();  // Rotate at the beginning of each iteration
+            auto& stream = *streams[currentIndex];
+            bool isStdin = interactive && currentIndex == 0;
+            bool shouldBlock = isStdin && streams.size() == 1;
+            
+            if (isStdin && !shouldBlock && std::cin.rdbuf()->in_avail() == 0) {
+                continue;  // Skip stdin if no input and other streams exist
             }
-            return false;
+
+            if (std::getline(stream, line)) {
+                if (line.empty()) {
+                    continue;  // Skip empty lines
+                }
+                if (line.find("OpenFile ") == 0) {
+                    std::string filename = line.substr(9);
+                    auto newFile = std::make_unique<std::ifstream>(filename);
+                    if (newFile->good()) {
+                        streams.push_back(std::move(newFile));
+                        names.push_back(filename);
+                        std::cout << "Opened file: " << filename << std::endl;
+                    } else {
+                        std::cerr << "Failed to open file: " << filename << std::endl;
+                    }
+                    return getNextLine(line);
+                }
+                return true;  // Successful read, no need to rotate again
+            }
+            
+            if (isStdin && std::cin.eof()) {
+                streams.clear();
+                names.clear();
+                return false;
+            }
+            
+            if (currentIndex > 0 || !interactive) {
+                streams.erase(streams.begin() + currentIndex);
+                names.erase(names.begin() + currentIndex);
+            }
         }
+        return false;
+    }
     
     private:
         void rotate() {
