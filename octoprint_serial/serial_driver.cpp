@@ -148,9 +148,12 @@ class InputSourceManager {
         // Modified constructor to handle both interactive and file-based input
     InputSourceManager(const std::string& source, bool interactive): interactive(interactive) {
         if (interactive) {
+            std::cerr << "Starting in interactive mode" << std::endl;
             streams.emplace_back(&std::cin);
             names.push_back("stdin");
         } else {
+            std::cerr << "Starting in File-mode " << source << std::endl;
+
             auto file = std::make_unique<std::ifstream>(source);
 
             if (!(*file)) {
@@ -171,7 +174,7 @@ class InputSourceManager {
         while (!streams.empty()) {
             rotate();  // Rotate at the beginning of each iteration
             auto& stream = *streams[currentIndex];
-            bool isStdin = interactive && currentIndex == 0;
+            bool isStdin = &stream == &std::cin;
             bool shouldBlock = isStdin && streams.size() == 1;
             
             if (isStdin && !shouldBlock && std::cin.rdbuf()->in_avail() == 0) {
