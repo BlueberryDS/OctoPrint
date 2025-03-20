@@ -27,16 +27,11 @@ public:
             std::cerr << "Failed to open serial port" << std::endl;
             return false;
         }
-        configure(false);
-        serialBlocks = false;
+        configure();
         return true;
     }
 
-    void configure(bool blocking) {
-        if (serialBlocks == blocking){
-          return;
-        }
-      
+    void configure() {
         struct termios tty;
         if (tcgetattr(fd, &tty) != 0) {
             std::cerr << "Error getting terminal attributes" << std::endl;
@@ -45,40 +40,53 @@ public:
 
         cfsetospeed(&tty, baudRate);
         cfsetispeed(&tty, baudRate);
-
+        // CLOCAL: Ignore modem control lines; CREAD: Enable receiver
         tty.c_cflag |= (CLOCAL | CREAD);
-        tty.c_cflag &= ~PARENB;
-        tty.c_cflag &= ~CSTOPB;
-        tty.c_cflag &= ~CSIZE;
-        tty.c_cflag |= CS8;
-        tty.c_lflag = 0;
-        tty.c_iflag &= ~(IXANY);
+        tty.c_cflag &= ~PARENB;           // No parity
+        tty.c_cflag &= ~CSTOPB;           // One stop bit
+        tty.c_cflag &= ~CSIZE;            // Clear character size
+        tty.c_cflag |= CS8;               // 8-bit characters
+        // ICANON: Enable canonical mode for line-based input; reads return full lines or nothing
+        tty.c_lflag |= ICANON;
+        tty.c_iflag &= ~(IXANY);          // Only XON/XOFF restarts output
+        // IXON: Enable XON/XOFF output control; IXOFF: Enable XON/XOFF input control
+        // Handled transparently by the OS to pause/resume I/O without program intervention
         tty.c_iflag |= (IXON | IXOFF);
-        tty.c_oflag &= ~OPOST;
+        tty.c_oflag &= ~OPOST;            // Disable output processing (raw mode)
+        tty.c_cc[VMIN] = 1;               // Wait for at least 1 byte line
+        tty.c_cc[VTIME] = 0;              // No inter-byte timeout
 
-        tty.c_cc[VMIN] = blocking ? 1 : 0;
-        tty.c_cc[VTIME] = 0;
+        tcflush(fd, TCIFLUSH);
 
+        // TCSANOW: Apply changes immediately
         if (tcsetattr(fd, TCSANOW, &tty) != 0) {
             std::cerr << "Error setting terminal attributes" << std::endl;
             exit(1);
         }
-        fcntl(fd, F_SETFL, blocking ? 0 : O_NONBLOCK);
     }
 
     ssize_t writeData(const std::string& data) {
         return write(fd, data.c_str(), data.size());
     }
 
-    ssize_t readData(char* buffer, size_t size) {
-        return read(fd, buffer, size);
+    ssize_t readData(char* buffer, size_t size, bool blocking = false) {
+        int bytes_available = MAX_INPUT;
+
+        if (!blocking && ioctl(fd, FIONREAD, &bytes_available) < 0) {  // FIONREAD: Get bytes in input buffer
+            std::cerr << "ioctl FIONREAD error: " << strerror(errno) << std::endl;
+            return -1;
+        }
+
+        if (bytes_available > 0) {
+            return read(fd, buffer, size);  // Blocks until full line since ICANON is set
+        }
+        return 0;
     }
 
 private:
     std::string port;
     int baudRate;
     int fd;
-    bool serialBlocks;
 };
 
 class InputSourceManager {
@@ -147,7 +155,7 @@ class InputSourceManager {
                 return false;
             }
             
-            if (currentIndex > 0 || !interactive) {
+            if (!isStdin) {
                 streams.erase(streams.begin() + currentIndex);
                 names.erase(names.begin() + currentIndex);
             }
@@ -196,9 +204,9 @@ void handleResendRequest(int requestedLine) {
     }
 }
 
-void readSerialResponse(SerialPort& serialPort) {
+void readSerialResponse(SerialPort& serialPort, bool blocking = false) {
     char buffer[256];
-    int n = serialPort.readData(buffer, sizeof(buffer) - 1);
+    int n = serialPort.readData(buffer, sizeof(buffer) - 1, blocking);
     if (n > 0) {
         buffer[n] = '\0';
         std::string response(buffer);
@@ -255,25 +263,23 @@ int main(int argc, char* argv[]) {
                 commandQueue.pop_front();
             }
         } else {
-            serialPort.configure(true);
+            readSerialResponse(serialPort, true); // block if we are not reading new lines
         }
 
         while (cursor != commandQueue.end() && (commandsSent - commandsAcknowledged < maxOutstandingCommands)) {
-            serialPort.configure(false);
             std::string& command = *cursor;
             ssize_t bytes_written = serialPort.writeData(command);
             if (bytes_written > 0) {
                 commandsSent++;
                 cursorLineNumber++;
                 ++cursor;
-            } else if (bytes_written == -1 && errno != EAGAIN) {
+            } else if (bytes_written == -1) {
                 std::cerr << "Serial write error" << std::endl;
                 running = false;
                 break;
             }
             readSerialResponse(serialPort);
         }
-        readSerialResponse(serialPort);
     }
     return 0;
 }
