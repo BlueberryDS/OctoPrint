@@ -176,7 +176,10 @@ class InputSourceManager {
             bool isStdin = &stream == &std::cin;
             
             if (isStdin && std::cin.rdbuf()->in_avail() == 0) {
-                continue;  // Always skip stdin
+                if (streams.size() > 1)
+                    continue;  // Always skip stdin
+                else
+                    return false; // If it's the only stream, return false;
             }
 
             if (std::getline(stream, line)) {
@@ -193,7 +196,7 @@ class InputSourceManager {
                     } else {
                         std::cerr << "Failed to open file: " << filename << std::endl;
                     }
-                    return getNextLine(line);
+                    continue;
                 }
                 return true;  // Successful read, no need to rotate again
             }
@@ -220,7 +223,6 @@ class InputSourceManager {
 
 const size_t maxOutstandingCommands = 60;
 size_t lineNumber = 0;
-size_t commandsSent = 0;
 size_t commandsAcknowledged = 0;
 
 
@@ -336,6 +338,7 @@ int main(int argc, char* argv[]) {
     }
 
     size_t commandsSentLast = 0;
+    size_t commandsSent = 0;
     bool running = true;
 
     while (running) {
