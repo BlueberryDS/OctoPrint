@@ -174,9 +174,8 @@ class InputSourceManager {
             rotate();  // Rotate at the beginning of each iteration
             auto& stream = *streams[currentIndex];
             bool isStdin = &stream == &std::cin;
-            bool shouldBlock = isStdin && streams.size() == 1;
             
-            if (isStdin && !shouldBlock && std::cin.rdbuf()->in_avail() == 0) {
+            if (isStdin && !(streams.size() == 1) && std::cin.rdbuf()->in_avail() == 0) {
                 continue;  // Skip stdin if no input and other streams exist
             }
 
@@ -220,7 +219,6 @@ class InputSourceManager {
     };
 
 std::deque<std::string> commandQueue;
-bool running = true;
 const size_t maxQueueSize = 300;
 const size_t maxOutstandingCommands = 60;
 size_t lineNumber = 0;
@@ -235,7 +233,15 @@ std::string addChecksum(const std::string& command) {
         checksum ^= c;
     }
     std::ostringstream formattedCommand;
-    formattedCommand << "N" << lineNumber << " " << command << "*" << checksum << "\n";
+
+    if (lineNumber == INT32_MAX) { // Overflow support for linenumbers
+        lineNumber = 0;
+    }
+    else {
+        formattedCommand << "N" << lineNumber << " ";
+    }
+    formattedCommand << command << "*" << checksum << "\n";
+
     lineNumber++;
     return formattedCommand.str();
 }
@@ -299,15 +305,14 @@ int main(int argc, char* argv[]) {
 
     cursor = commandQueue.begin();
     cursorLineNumber = 0;
-    int commandsSentLast = -1;
+    size_t commandsSentLast = 0;
+    bool running = true;
+
     while (running) {
-        if (commandsSent > commandsSentLast) {          
+        std::string line;
+        if ((commandsSent > commandsSentLast || commandsSent == 0) && sourceManager.getNextLine(line)) {          
             commandsSentLast = commandsSent;
-            std::string line;
-            if (!sourceManager.getNextLine(line)) {
-                running = false;
-                break;
-            }
+
             std::string formattedCommand = addChecksum(line);
             commandQueue.push_back(formattedCommand);
 
@@ -322,6 +327,12 @@ int main(int argc, char* argv[]) {
             std::string& command = *cursor;
             ssize_t bytes_written = serialPort.writeData(command);
             if (bytes_written > 0) {
+                if (commandsSent == INT32_MAX) {
+                    // Smartly handle commands sent so that we don't overflow
+                    commandsSent = commandsSent - commandsAcknowledged;
+                    commandsSentLast = commandsSentLast - commandsAcknowledged;
+                    commandsAcknowledged = 0;
+                }
                 commandsSent++;
                 cursorLineNumber++;
                 ++cursor;
