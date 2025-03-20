@@ -282,7 +282,7 @@ std::string addChecksum(const std::string& command) {
     }
     std::ostringstream formattedCommand;
 
-    if (lineNumber != SIZE_T_MAX) { // Skip a line number to reset
+    if (lineNumber != SIZE_MAX) { // Skip a line number to reset
         formattedCommand << "N" << lineNumber << " ";
     }
     lineNumber++;
@@ -353,7 +353,7 @@ int main(int argc, char* argv[]) {
             const std::string& command = commandQueue.get();
             ssize_t bytes_written = serialPort.writeData(command);
             if (bytes_written > 0) {
-                if (commandsSent == SIZE_T_MAX) {
+                if (commandsSent == SIZE_MAX) {
                     // Smartly handle commands sent so that we don't overflow
                     commandsSent = commandsSent - commandsAcknowledged;
                     commandsSentLast = commandsSentLast - commandsAcknowledged;
@@ -362,8 +362,7 @@ int main(int argc, char* argv[]) {
                 commandsSent++;
             } else if (bytes_written == -1) {
                 std::cerr << "Serial write error" << std::endl;
-                running = false;
-                break;
+                throw std::runtime_error("Serial Write Did not Succeed");
             }
             readSerialResponse(serialPort);
         }
