@@ -10,6 +10,46 @@
 #include <errno.h>
 #include <regex>
 
+/*
+ * FileDescriptorFlagGuard: RAII guard to temporarily set and restore file descriptor flags.
+ * Ensures flags are restored when the guard goes out of scope, keeping writes blocking
+ * while allowing temporary non-blocking reads.
+ */
+class FileDescriptorFlagGuard {
+    public:
+        FileDescriptorFlagGuard(int fd, int flag_to_set)
+            : fd_(fd) {
+            // Get current flags
+            original_flags_ = fcntl(fd_, F_GETFL, 0);
+            if (original_flags_ == -1) {
+                std::cerr << "fcntl F_GETFL error: " << strerror(errno) << std::endl;
+                throw std::runtime_error("Failed to get file descriptor flags");
+            }
+    
+            // Set new flags with the specified flag added
+            if (fcntl(fd_, F_SETFL, original_flags_ | flag_to_set) == -1) {
+                std::cerr << "fcntl F_SETFL error: " << strerror(errno) << std::endl;
+                throw std::runtime_error("Failed to set file descriptor flags");
+            }
+        }
+    
+        ~FileDescriptorFlagGuard() {
+            // Restore original flags
+            if (fcntl(fd_, F_SETFL, original_flags_) == -1) {
+                std::cerr << "fcntl F_SETFL restore error: " << strerror(errno) << std::endl;
+                // Log error but don’t throw; destructor shouldn’t propagate exceptions
+            }
+        }
+    
+        // Prevent copying to avoid double flag management
+        FileDescriptorFlagGuard(const FileDescriptorFlagGuard&) = delete;
+        FileDescriptorFlagGuard& operator=(const FileDescriptorFlagGuard&) = delete;
+    
+    private:
+        int fd_;
+        int original_flags_;
+    };
+
 class SerialPort {
 public:
     SerialPort(const std::string& port, int baudRate)
@@ -70,16 +110,24 @@ public:
     }
 
     ssize_t readData(char* buffer, size_t size, bool blocking = false) {
-        int bytes_available = 1024; // MAX_INPUT
-
-        if (!blocking && ioctl(fd, FIONREAD, &bytes_available) < 0) {  // FIONREAD: Get bytes in input buffer
-            std::cerr << "ioctl FIONREAD error: " << errno << std::endl;
-            return -1;
-        }
-
-        if (bytes_available > 0) {
+        if (blocking) {
             return read(fd, buffer, size);  // Blocks until full line since ICANON is set
+        } else {
+            // Temporarily set O_NONBLOCK using RAII guard
+            FileDescriptorFlagGuard guard(fd, O_NONBLOCK);
+
+            ssize_t n = read(fd, buffer, size);  // Doesn't Block
+
+            if (n == -1 && errno == EAGAIN) {
+                return 0;  // No full line ready
+            }
+            if (n <= 0) {  // Other errors or unexpected zero
+                std::cerr << "Read error after FIONREAD: " << strerror(errno) << std::endl;
+                return -1;
+            }
+            return n;  // Full line received
         }
+    
         return 0;
     }
 
