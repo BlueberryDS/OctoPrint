@@ -142,7 +142,6 @@ class InputSourceManager {
         std::vector<std::unique_ptr<std::istream>> streams;
         std::vector<std::string> names;
         size_t currentIndex = 0;
-        bool interactive;
     
     public:
         // Modified constructor to handle both interactive and file-based input
