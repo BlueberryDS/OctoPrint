@@ -70,10 +70,10 @@ public:
     }
 
     ssize_t readData(char* buffer, size_t size, bool blocking = false) {
-        int bytes_available = MAX_INPUT;
+        int bytes_available = 1024; // MAX_INPUT
 
         if (!blocking && ioctl(fd, FIONREAD, &bytes_available) < 0) {  // FIONREAD: Get bytes in input buffer
-            std::cerr << "ioctl FIONREAD error: " << strerror(errno) << std::endl;
+            std::cerr << "ioctl FIONREAD error: " << errno << std::endl;
             return -1;
         }
 
