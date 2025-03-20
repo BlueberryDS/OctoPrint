@@ -175,8 +175,8 @@ class InputSourceManager {
             auto& stream = *streams[currentIndex];
             bool isStdin = &stream == &std::cin;
             
-            if (isStdin && !(streams.size() == 1) && std::cin.rdbuf()->in_avail() == 0) {
-                continue;  // Skip stdin if no input and other streams exist
+            if (isStdin && std::cin.rdbuf()->in_avail() == 0) {
+                continue;  // Always skip stdin
             }
 
             if (std::getline(stream, line)) {
@@ -218,14 +218,62 @@ class InputSourceManager {
         }
     };
 
-std::deque<std::string> commandQueue;
-const size_t maxQueueSize = 300;
 const size_t maxOutstandingCommands = 60;
 size_t lineNumber = 0;
 size_t commandsSent = 0;
 size_t commandsAcknowledged = 0;
-size_t cursorLineNumber = 0;
-std::deque<std::string>::iterator cursor;
+
+
+class LineQueue {
+private:
+    std::deque<std::string> commandQueue;
+    const size_t maxQueueSize = 300;
+    size_t cursorLineNumber = 0;
+    size_t cursor = 0;
+public:
+    void moveToLine(size_t requestedLine) {
+        if (requestedLine < cursorLineNumber) {
+            std::cerr << "Error: Resend request for line " << requestedLine << " is no longer available in queue" << std::endl;
+            return;
+        }
+        auto requestedCursor = cursor + (requestedLine - cursorLineNumber);
+        if (requestedCursor >= 0) {
+            cursor = requestedCursor;
+            cursorLineNumber = requestedLine;
+        } else {
+            std::cerr << "Error: Requested line " << requestedLine << " is out of range." << std::endl;
+            throw std::runtime_error("Retry cannot be performed, all is lost.");
+        }
+    }
+
+    void add(std::string command) {
+        commandQueue.push_back(command);
+
+        if (commandQueue.size() > maxQueueSize) {
+            commandQueue.pop_front();
+            cursor--;
+            if (cursor < 0){
+                std::cerr << "Command Sending is Hung!" << std::endl;
+                throw std::runtime_error("Queue has overrun max size");
+            }
+        }
+    }
+
+    explicit operator bool() const {
+        return cursor < commandQueue.size();
+    }
+    
+    const std::string& get() {
+        if (*this) {
+            cursorLineNumber++;
+            cursor++;
+
+            return commandQueue[cursor-1];
+        }
+
+        throw std::runtime_error("Invalid Access to queue");
+    }
+} commandQueue;
 
 std::string addChecksum(const std::string& command) {
     int checksum = 0;
@@ -234,30 +282,14 @@ std::string addChecksum(const std::string& command) {
     }
     std::ostringstream formattedCommand;
 
-    if (lineNumber == INT32_MAX) { // Overflow support for linenumbers
-        lineNumber = 0;
-    }
-    else {
+    if (lineNumber != SIZE_T_MAX) { // Skip a line number to reset
         formattedCommand << "N" << lineNumber << " ";
     }
+    lineNumber++;
+
     formattedCommand << command << "*" << checksum << "\n";
 
-    lineNumber++;
     return formattedCommand.str();
-}
-
-void handleResendRequest(int requestedLine) {
-    if (requestedLine < cursorLineNumber) {
-        std::cerr << "Error: Resend request for line " << requestedLine << " is no longer available in queue" << std::endl;
-        return;
-    }
-    auto requestedCursor = cursor + (requestedLine - cursorLineNumber);
-    if (requestedCursor >= commandQueue.begin()) {
-        cursor = requestedCursor;
-        cursorLineNumber = requestedLine;
-    } else {
-        std::cerr << "Error: Requested line " << requestedLine << " is out of range." << std::endl;
-    }
 }
 
 void readSerialResponse(SerialPort& serialPort, bool blocking = false) {
@@ -270,10 +302,10 @@ void readSerialResponse(SerialPort& serialPort, bool blocking = false) {
             commandsAcknowledged++;
         }
         std::smatch match;
-        std::regex resendRegex("Resend (\\d+)");
+        std::regex resendRegex("Resend: (\\d+)");
         if (std::regex_search(response, match, resendRegex)) {
-            int requestedLine = std::stoi(match[1].str());
-            handleResendRequest(requestedLine);
+            size_t requestedLine = std::stoi(match[1].str());
+            commandQueue.moveToLine(requestedLine);
         }
 
         std::cout << response << std::endl;
@@ -303,8 +335,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    cursor = commandQueue.begin();
-    cursorLineNumber = 0;
     size_t commandsSentLast = 0;
     bool running = true;
 
@@ -314,28 +344,22 @@ int main(int argc, char* argv[]) {
             commandsSentLast = commandsSent;
 
             std::string formattedCommand = addChecksum(line);
-            commandQueue.push_back(formattedCommand);
-
-            if (commandQueue.size() > maxQueueSize) {
-                commandQueue.pop_front();
-            }
+            commandQueue.add(formattedCommand);
         } else {
             readSerialResponse(serialPort, true); // block if we are not reading new lines
         }
 
-        while (cursor != commandQueue.end() && (commandsSent - commandsAcknowledged < maxOutstandingCommands)) {
-            std::string& command = *cursor;
+        while (commandQueue && (commandsSent - commandsAcknowledged < maxOutstandingCommands)) {
+            const std::string& command = commandQueue.get();
             ssize_t bytes_written = serialPort.writeData(command);
             if (bytes_written > 0) {
-                if (commandsSent == INT32_MAX) {
+                if (commandsSent == SIZE_T_MAX) {
                     // Smartly handle commands sent so that we don't overflow
                     commandsSent = commandsSent - commandsAcknowledged;
                     commandsSentLast = commandsSentLast - commandsAcknowledged;
                     commandsAcknowledged = 0;
                 }
                 commandsSent++;
-                cursorLineNumber++;
-                ++cursor;
             } else if (bytes_written == -1) {
                 std::cerr << "Serial write error" << std::endl;
                 running = false;
