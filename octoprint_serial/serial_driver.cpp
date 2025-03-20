@@ -145,7 +145,7 @@ class InputSourceManager {
     
     public:
         // Modified constructor to handle both interactive and file-based input
-    InputSourceManager(const std::string& source, bool interactive): interactive(interactive) {
+    InputSourceManager(const std::string& source, bool interactive) {
         if (interactive) {
             std::cerr << "Starting in interactive mode" << std::endl;
             streams.emplace_back(&std::cin);
