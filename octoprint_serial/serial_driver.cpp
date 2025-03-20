@@ -219,6 +219,8 @@ void readSerialResponse(SerialPort& serialPort, bool blocking = false) {
             int requestedLine = std::stoi(match[1].str());
             handleResendRequest(requestedLine);
         }
+
+        std::cout << response << std::endl;
     }
 }
 
