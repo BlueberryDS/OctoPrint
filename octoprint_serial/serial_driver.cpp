@@ -136,88 +136,123 @@ private:
     int baudRate;
     int fd;
 };
-
+/*
+ * InputSourceManager: Uses low-level read() for stdin (non-blocking full lines),
+ * and std::ifstream for files (blocking).
+ */
 class InputSourceManager {
     private:
-        std::vector<std::unique_ptr<std::istream>> streams;
-        std::vector<std::string> names;
+        struct StdinSource {
+            int fd;
+            std::string name;
+            explicit StdinSource(int fileDescriptor, const std::string& n) : fd(fileDescriptor), name(n) {}
+            // No close() for STDIN_FILENO
+        };
+    
+        struct FileSource {
+            std::unique_ptr<std::ifstream> stream;
+            std::string name;
+            explicit FileSource(const std::string& filename) 
+                : stream(std::make_unique<std::ifstream>(filename)), name(filename) {}
+        };
+    
+        std::vector<std::variant<std::unique_ptr<StdinSource>, std::unique_ptr<FileSource>>> sources;
         size_t currentIndex = 0;
+        bool interactive;
+    
+        void configureStdin() {
+            struct termios tty;
+            if (tcgetattr(STDIN_FILENO, &tty) != 0) {
+                std::cerr << "Error getting stdin attributes: " << strerror(errno) << std::endl;
+                return;
+            }
+            tty.c_lflag |= ICANON;
+            tty.c_cc[VMIN] = 1;
+            tty.c_cc[VTIME] = 0;
+            if (tcsetattr(STDIN_FILENO, TCSANOW, &tty) != 0) {
+                std::cerr << "Error setting stdin attributes: " << strerror(errno) << std::endl;
+            }
+            int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+            if (flags == -1 || fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK) == -1) {
+                std::cerr << "Failed to set O_NONBLOCK on stdin: " << strerror(errno) << std::endl;
+            }
+        }
     
     public:
-        // Modified constructor to handle both interactive and file-based input
-    InputSourceManager(const std::string& source, bool interactive) {
-        if (interactive) {
-            std::cerr << "Starting in interactive mode" << std::endl;
-            streams.emplace_back(&std::cin);
-            names.push_back("stdin");
-        } else {
-            std::cerr << "Starting in File-mode " << source << std::endl;
-
-            auto file = std::make_unique<std::ifstream>(source);
-
-            if (!(*file)) {
-                std::cerr << "Failed to open G-code file: " << source << std::endl;
-                throw std::runtime_error("File opening failed");
-            }
-            streams.emplace_back(std::move(file));
-            names.push_back(source);
-        }
-    }
-
-    explicit operator bool() const {
-        // Return true if we have at least one stream and the primary stream is good
-        return !streams.empty() && streams[0]->good();
-    }
-    
-    bool getNextLine(std::string& line) {
-        while (!streams.empty()) {
-            rotate();  // Rotate at the beginning of each iteration
-            auto& stream = *streams[currentIndex];
-            bool isStdin = &stream == &std::cin;
-            
-            if (isStdin && std::cin.rdbuf()->in_avail() == 0) {
-                if (streams.size() > 1)
-                    continue;  // Always skip stdin
-                else
-                    return false; // If it's the only stream, return false;
-            }
-
-            if (std::getline(stream, line)) {
-                if (line.empty()) {
-                    continue;  // Skip empty lines
+        InputSourceManager(const std::string& source, bool isInteractive) : interactive(isInteractive) {
+            if (interactive) {
+                std::cerr << "Starting in interactive mode" << std::endl;
+                sources.emplace_back(std::make_unique<StdinSource>(STDIN_FILENO, "stdin"));
+                configureStdin();
+            } else {
+                std::cerr << "Starting in File-mode " << source << std::endl;
+                auto fileSource = std::make_unique<FileSource>(source);
+                if (!fileSource->stream->is_open()) {
+                    std::cerr << "Failed to open G-code file " << source << std::endl;
+                    throw std::runtime_error("File opening failed");
                 }
+                sources.emplace_back(std::move(fileSource));
+            }
+        }
+    
+        explicit operator bool() const {
+            return !sources.empty();
+        }
+    
+        bool getNextLine(std::string& line) {
+            while (!sources.empty()) {
+                rotate();
+                auto& source = sources[currentIndex];
+    
+                if (auto* stdinSrc = std::get_if<std::unique_ptr<StdinSource>>(&source)) {
+                    char buffer[256];
+                    ssize_t n = read((*stdinSrc)->fd, buffer, sizeof(buffer) - 1);
+                    if (n < 0) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            if (sources.size() > 1) continue;
+                            return false;
+                        }
+                        std::cerr << "Read error from " << (*stdinSrc)->name << ": " << strerror(errno) << std::endl;
+                        return false;
+                    }
+                    if (n == 0) continue;  // Stdin EOF (Ctrl+D), keep it alive
+    
+                    buffer[n] = '\0';
+                    line = std::string(buffer);
+                    if (!line.empty() && line.back() == '\n') line.pop_back();
+                    if (line.empty()) continue;
+                } else if (auto* fileSrc = std::get_if<std::unique_ptr<FileSource>>(&source)) {
+                    if (!(*fileSrc)->stream->good()) {
+                        sources.erase(sources.begin() + currentIndex);
+                        continue;
+                    }
+                    if (std::getline(*(*fileSrc)->stream, line)) {
+                        if (line.empty()) continue;
+                    } else {
+                        sources.erase(sources.begin() + currentIndex);
+                        continue;
+                    }
+                }
+    
                 if (line.find("OpenFile ") == 0) {
                     std::string filename = line.substr(9);
-                    auto newFile = std::make_unique<std::ifstream>(filename);
-                    if (newFile->good()) {
-                        streams.push_back(std::move(newFile));
-                        names.push_back(filename);
+                    auto newFileSource = std::make_unique<FileSource>(filename);
+                    if (newFileSource->stream->is_open()) {
+                        sources.emplace_back(std::move(newFileSource));
                         std::cout << "Opened file: " << filename << std::endl;
                     } else {
-                        std::cerr << "Failed to open file: " << filename << std::endl;
+                        std::cerr << "Failed to open file " << filename << std::endl;
                     }
                     continue;
                 }
-                return true;  // Successful read, no need to rotate again
+                return true;
             }
-            
-            if (isStdin && std::cin.eof()) {
-                streams.clear();
-                names.clear();
-                return false;
-            }
-            
-            if (!isStdin) {
-                streams.erase(streams.begin() + currentIndex);
-                names.erase(names.begin() + currentIndex);
-            }
+            return false;
         }
-        return false;
-    }
     
     private:
         void rotate() {
-            currentIndex = (currentIndex + 1) % streams.size();
+            currentIndex = (currentIndex + 1) % sources.size();
         }
     };
 
