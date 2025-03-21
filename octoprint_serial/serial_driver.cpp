@@ -271,27 +271,23 @@ private:
     const size_t maxQueueSize = 300;
     size_t cursorLineNumber = 0;
     size_t cursor = 0;
+    const char* M110 = "M110";
+    const char* M110_ZERO = "M110 N0";
 
     std::string addChecksum(const std::string& command, size_t lineNumber) {
         std::ostringstream formattedCommand;
     
         if (lineNumber == 0) {
             std::cerr << "Warning: Line number is 0, resetting to 1" << std::endl;
-            commandQueue.push_back("M110 N1"); // Reset line number
+            commandQueue.push_back(M110_ZERO); // Reset line number
             lineNumber++; // Next line number would be N1 
         }
     
         formattedCommand << "N" << lineNumber << " "<< command;
         
         char checksum = 0;
-        for (char c : command) {
+        for (char c : formattedCommand.str()) {
             checksum ^= c;
-        }
-    
-        if (lineNumber == 0) {
-            std::cerr << "Warning: Line number is 0, resetting to 1" << std::endl;
-            commandQueue.push_back("M110 N1"); // Reset line number
-            lineNumber++; // Next line number would be N1 
         }
     
         formattedCommand << "*" << checksum << "\n";
@@ -311,6 +307,10 @@ public:
     }
 
     void add(std::string command) {
+        if (command.find(M110) == std::string::npos) {
+            return;
+        }
+
         commandQueue.push_back(addChecksum(
             command,
             commandQueue.size() - cursor + cursorLineNumber));
