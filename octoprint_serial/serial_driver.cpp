@@ -272,20 +272,20 @@ private:
     size_t cursorLineNumber = 0;
     size_t cursor = 0;
     const char* M110 = "M110";
-    const char* M110_ZERO = "M110 N0";
+    const char* M110_ZERO = "M110 N0*35\n"; // with checksum
 
     std::string addChecksum(const std::string& command, size_t lineNumber) {
         std::ostringstream formattedCommand;
     
         if (lineNumber == 0) {
-            std::cerr << "Warning: Line number is 0, resetting to 1" << std::endl;
+            std::cerr << "Warning: Line number is 0, resetting to 0" << std::endl;
             commandQueue.push_back(M110_ZERO); // Reset line number
             lineNumber++; // Next line number would be N1 
         }
     
         formattedCommand << "N" << lineNumber << " "<< command;
         
-        char checksum = 0;
+        int checksum = 0;
         for (char c : formattedCommand.str()) {
             checksum ^= c;
         }
@@ -296,6 +296,11 @@ private:
     }
 public:
     void moveToLine(size_t requestedLine) {
+        if (requestedLine > cursorLineNumber) {
+            std::cerr << "Error: Requested line " << requestedLine << " is ahead of current line " << cursorLineNumber << std::endl;
+            throw std::runtime_error("Retry cannot be performed, all is lost.");
+        }
+        
         auto requestedCursor = cursor + (requestedLine - cursorLineNumber);
         if (requestedCursor >= 0) {
             cursor = requestedCursor;
@@ -307,13 +312,9 @@ public:
     }
 
     void add(std::string command) {
-        if (command.find(M110) == std::string::npos) {
-            return;
-        }
-
         commandQueue.push_back(addChecksum(
             command,
-            commandQueue.size() - cursor + cursorLineNumber));
+            commandQueue.size() - cursor + cursorLineNumber)); // Calculate line number at end of queue
 
         if (commandQueue.size() > maxQueueSize) {
             commandQueue.pop_front();
