@@ -9,6 +9,7 @@
 #include <sys/ioctl.h>
 #include <errno.h>
 #include <regex>
+#include <cstring>
 
 /*
  * FileDescriptorFlagGuard: RAII guard to temporarily set and restore file descriptor flags.
@@ -22,13 +23,13 @@ class FileDescriptorFlagGuard {
             // Get current flags
             original_flags_ = fcntl(fd_, F_GETFL, 0);
             if (original_flags_ == -1) {
-                std::cerr << "fcntl F_GETFL error: " << errno << std::endl;
+                std::cerr << "fcntl F_GETFL error: " << strerror(errno) << std::endl;
                 throw std::runtime_error("Failed to get file descriptor flags");
             }
     
             // Set new flags with the specified flag added
             if (fcntl(fd_, F_SETFL, original_flags_ | flag_to_set) == -1) {
-                std::cerr << "fcntl F_SETFL error: " << errno << std::endl;
+                std::cerr << "fcntl F_SETFL error: " << strerror(errno) << std::endl;
                 throw std::runtime_error("Failed to set file descriptor flags");
             }
         }
@@ -36,7 +37,7 @@ class FileDescriptorFlagGuard {
         ~FileDescriptorFlagGuard() {
             // Restore original flags
             if (fcntl(fd_, F_SETFL, original_flags_) == -1) {
-                std::cerr << "fcntl F_SETFL restore error: " << errno << std::endl;
+                std::cerr << "fcntl F_SETFL restore error: " << strerror(errno) << std::endl;
                 // Log error but don’t throw; destructor shouldn’t propagate exceptions
             }
         }
@@ -122,7 +123,7 @@ public:
                 return 0;  // No full line ready
             }
             if (n <= 0) {  // Other errors or unexpected zero
-                std::cerr << "Read error after FIONREAD: " << errno << std::endl;
+                std::cerr << "Read error after FIONREAD: " << strerror(errno) << std::endl;
                 return -1;
             }
             return n;  // Full line received
