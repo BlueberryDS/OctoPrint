@@ -136,123 +136,126 @@ private:
     int baudRate;
     int fd;
 };
-/*
- * InputSourceManager: Uses low-level read() for stdin (non-blocking full lines),
- * and std::ifstream for files (blocking).
- */
 class InputSourceManager {
     private:
-        struct StdinSource {
-            int fd;
-            std::string name;
-            explicit StdinSource(int fileDescriptor, const std::string& n) : fd(fileDescriptor), name(n) {}
-            // No close() for STDIN_FILENO
-        };
-    
-        struct FileSource {
-            std::unique_ptr<std::ifstream> stream;
-            std::string name;
-            explicit FileSource(const std::string& filename) 
-                : stream(std::make_unique<std::ifstream>(filename)), name(filename) {}
-        };
-    
-        std::vector<std::variant<std::unique_ptr<StdinSource>, std::unique_ptr<FileSource>>> sources;
-        size_t currentIndex = 0;
-        bool interactive;
-    
-        void configureStdin() {
+        // Configuration for stdin
+        static void configureStdin() {
             struct termios tty;
             if (tcgetattr(STDIN_FILENO, &tty) != 0) {
-                std::cerr << "Error getting stdin attributes: " << strerror(errno) << std::endl;
+                std::cerr << "Warning: Error getting stdin attributes: " << strerror(errno) << std::endl;
                 return;
             }
-            tty.c_lflag |= ICANON;
+            tty.c_lflag |= ICANON;  // Line-based input
             tty.c_cc[VMIN] = 1;
             tty.c_cc[VTIME] = 0;
             if (tcsetattr(STDIN_FILENO, TCSANOW, &tty) != 0) {
-                std::cerr << "Error setting stdin attributes: " << strerror(errno) << std::endl;
+                std::cerr << "Warning: Error setting stdin attributes: " << strerror(errno) << std::endl;
             }
             int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
             if (flags == -1 || fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK) == -1) {
-                std::cerr << "Failed to set O_NONBLOCK on stdin: " << strerror(errno) << std::endl;
+                std::cerr << "Warning: Failed to set O_NONBLOCK on stdin: " << strerror(errno) << std::endl;
+            }
+        }
+    
+        // Open a file and return a stream, or nullptr on failure
+        static std::unique_ptr<std::ifstream> openFile(const std::string& filename) {
+            auto stream = std::make_unique<std::ifstream>(filename);
+            if (!stream->is_open()) {
+                std::cerr << "Failed to open file: " << filename << std::endl;
+                return nullptr;
+            }
+            return stream;
+        }
+    
+        // State
+        bool interactive_;                          // Whether stdin is active
+        std::unique_ptr<std::ifstream> fileStream_; // Optional file stream
+    
+        // Try reading a line from stdin (non-blocking)
+        bool tryReadStdin(std::string& line) {
+            char buffer[256];
+            ssize_t n = read(STDIN_FILENO, buffer, sizeof(buffer) - 1);
+            if (n < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    return false;  // No full line available
+                }
+                std::cerr << "Read error from stdin: " << strerror(errno) << std::endl;
+                return false;
+            }
+            if (n == 0) return false;  // EOF (Ctrl+D)
+    
+            buffer[n] = '\0';
+            line = std::string(buffer);
+            if (!line.empty() && line.back() == '\n') line.pop_back();
+            return !line.empty();
+        }
+    
+        // Try reading a line from the file (blocking)
+        bool readFile(std::string& line) {
+            if (!fileStream_ || !fileStream_->good()) {
+                fileStream_.reset();  // Clear if EOF or error
+                return false;
+            }
+            if (std::getline(*fileStream_, line) && !line.empty()) {
+                return true;
+            }
+            fileStream_.reset();  // EOF or empty line, clear the stream
+            return false;
+        }
+    
+        // Handle "OpenFile" command
+        void handleOpenFile(const std::string& line) {
+            std::string filename = line.substr(9);
+            auto newStream = openFile(filename);
+            if (newStream) {
+                fileStream_ = std::move(newStream);
+                std::cout << "Opened file: " << filename << std::endl;
             }
         }
     
     public:
-        InputSourceManager(const std::string& source, bool isInteractive) : interactive(isInteractive) {
-            if (interactive) {
+        InputSourceManager(const std::string& source, bool interactive) 
+            : interactive_(interactive) {
+            if (interactive_) {
                 std::cerr << "Starting in interactive mode" << std::endl;
-                sources.emplace_back(std::make_unique<StdinSource>(STDIN_FILENO, "stdin"));
                 configureStdin();
-            } else {
-                std::cerr << "Starting in File-mode " << source << std::endl;
-                auto fileSource = std::make_unique<FileSource>(source);
-                if (!fileSource->stream->is_open()) {
-                    std::cerr << "Failed to open G-code file " << source << std::endl;
+            }
+            if (!interactive && !source.empty()) {
+                std::cerr << "Starting with file: " << source << std::endl;
+                fileStream_ = openFile(source);
+                if (!fileStream_) {
                     throw std::runtime_error("File opening failed");
                 }
-                sources.emplace_back(std::move(fileSource));
             }
         }
     
         explicit operator bool() const {
-            return !sources.empty();
+            return interactive_ || fileStream_;
         }
     
         bool getNextLine(std::string& line) {
-            while (!sources.empty()) {
-                rotate();
-                auto& source = sources[currentIndex];
+                bool gotLine = false;
     
-                if (auto* stdinSrc = std::get_if<std::unique_ptr<StdinSource>>(&source)) {
-                    char buffer[256];
-                    ssize_t n = read((*stdinSrc)->fd, buffer, sizeof(buffer) - 1);
-                    if (n < 0) {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                            if (sources.size() > 1) continue;
-                            return false;
-                        }
-                        std::cerr << "Read error from " << (*stdinSrc)->name << ": " << strerror(errno) << std::endl;
-                        return false;
-                    }
-                    if (n == 0) continue;  // Stdin EOF (Ctrl+D), keep it alive
-    
-                    buffer[n] = '\0';
-                    line = std::string(buffer);
-                    if (!line.empty() && line.back() == '\n') line.pop_back();
-                    if (line.empty()) continue;
-                } else if (auto* fileSrc = std::get_if<std::unique_ptr<FileSource>>(&source)) {
-                    if (!(*fileSrc)->stream->good()) {
-                        sources.erase(sources.begin() + currentIndex);
-                        continue;
-                    }
-                    if (std::getline(*(*fileSrc)->stream, line)) {
-                        if (line.empty()) continue;
-                    } else {
-                        sources.erase(sources.begin() + currentIndex);
-                        continue;
-                    }
+                // Try stdin if it's our turn and we're interactive
+                if (interactive_) {
+                    gotLine = tryReadStdin(line);
+                }
+                // Try file if it's our turn or stdin failed
+                
+                if (fileStream_ && !gotLine) {
+                    gotLine = readFile(line);
                 }
     
+                if (!gotLine) {
+                    return false;  // No line available
+                }
+    
+                // Check for "OpenFile" command
                 if (line.find("OpenFile ") == 0) {
-                    std::string filename = line.substr(9);
-                    auto newFileSource = std::make_unique<FileSource>(filename);
-                    if (newFileSource->stream->is_open()) {
-                        sources.emplace_back(std::move(newFileSource));
-                        std::cout << "Opened file: " << filename << std::endl;
-                    } else {
-                        std::cerr << "Failed to open file " << filename << std::endl;
-                    }
-                    continue;
+                    handleOpenFile(line);
                 }
-                return true;
-            }
-            return false;
-        }
     
-    private:
-        void rotate() {
-            currentIndex = (currentIndex + 1) % sources.size();
+                return true;  // Got a valid line
         }
     };
 
