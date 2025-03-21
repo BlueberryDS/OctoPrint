@@ -139,6 +139,38 @@ private:
 };
 class InputSourceManager {
     private:
+        std::string stripComments(const std::string& line) {
+            std::string result;
+            bool inParentheses = false;
+            
+            for (size_t i = 0; i < line.length(); ++i) {
+                if (line[i] == '(') {
+                    inParentheses = true;
+                    continue;
+                }
+                if (line[i] == ')') {
+                    inParentheses = false;
+                    continue;
+                }
+                if (line[i] == ';' && !inParentheses) {
+                    break;  // Stop at semicolon if not in parentheses
+                }
+                if (!inParentheses) {
+                    result += line[i];
+                }
+            }
+            
+            // Remove leading and trailing whitespace
+            size_t start = result.find_first_not_of(" \t");
+            size_t end = result.find_last_not_of(" \t");
+            
+            if (start == std::string::npos) {
+                return "";  // Empty line after stripping
+            }
+            
+            return result.substr(start, end - start + 1);
+        }
+
         // Configuration for stdin
         static void configureStdin() {
             struct termios tty;
@@ -200,7 +232,6 @@ class InputSourceManager {
             if (std::getline(*fileStream_, line) && !line.empty()) {
                 return true;
             }
-            fileStream_.reset();  // EOF or empty line, clear the stream
             return false;
         }
     
@@ -210,7 +241,7 @@ class InputSourceManager {
             auto newStream = openFile(filename);
             if (newStream) {
                 fileStream_ = std::move(newStream);
-                std::cout << "Opened file: " << filename << std::endl;
+                std::cerr << "Opened file: " << filename << std::endl;
             }
         }
     
@@ -250,28 +281,32 @@ class InputSourceManager {
                 if (!gotLine) {
                     return false;  // No line available
                 }
+
+                line = stripComments(line);
+
+                if(line.empty()) {
+                    return false;  // Empty line after stripping
+                }
     
                 // Check for "OpenFile" command
                 if (line.find("OpenFile ") == 0) {
                     handleOpenFile(line);
+                    return false;
                 }
     
                 return true;  // Got a valid line
         }
     };
 
-const size_t maxOutstandingCommands = 60;
-size_t lineNumber = 0;
-size_t commandsAcknowledged = 0;
-
-
 class LineQueue {
 private:
+    const size_t maxOutstandingCommands = 60;
     std::deque<std::string> commandQueue;
     const size_t maxQueueSize = 300;
     size_t cursorLineNumber = 0;
     size_t cursor = 0;
-    const char* M110 = "M110";
+    size_t commandsSent = 0;
+    size_t commandsAcknowledged = 0;
     const char* M110_ZERO = "M110 N0*35\n"; // with checksum
 
     std::string addChecksum(const std::string& command, size_t lineNumber) {
@@ -301,10 +336,12 @@ public:
             throw std::runtime_error("Retry cannot be performed, all is lost.");
         }
         
-        auto requestedCursor = cursor + (requestedLine - cursorLineNumber);
+        auto rewindRequested = (cursorLineNumber - requestedLine);
+        auto requestedCursor = cursor - rewindRequested;
         if (requestedCursor >= 0) {
             cursor = requestedCursor;
             cursorLineNumber = requestedLine;
+            commandsSent -= rewindRequested; // Anything after the resend would have been ignored;
         } else {
             std::cerr << "Error: Requested line " << requestedLine << " is out of range." << std::endl;
             throw std::runtime_error("Retry cannot be performed, all is lost.");
@@ -329,11 +366,26 @@ public:
     explicit operator bool() const {
         return cursor < commandQueue.size();
     }
+
+    bool canAddCommands() const {
+        return (commandsSent - commandsAcknowledged < maxOutstandingCommands);
+    }
+
+    void acknowledge() {
+        commandsAcknowledged++;
+    }
     
     const std::string& get() {
         if (*this) {
             cursorLineNumber++;
             cursor++;
+
+            if (commandsSent == SIZE_MAX) {
+                // Smartly handle commands sent so that we don't overflow
+                commandsSent = commandsSent - commandsAcknowledged;
+                commandsAcknowledged = 0;
+            }
+            commandsSent++;
 
             return commandQueue[cursor-1];
         }
@@ -342,25 +394,25 @@ public:
     }
 } commandQueue;
 
-
-
 void readSerialResponse(SerialPort& serialPort, bool blocking = false) {
     char buffer[256];
     int n = serialPort.readData(buffer, sizeof(buffer) - 1, blocking);
     if (n > 0) {
         buffer[n] = '\0';
-        std::string response(buffer);
-        if (response.find("ok") != std::string::npos) {
-            commandsAcknowledged++;
-        }
         std::smatch match;
         std::regex resendRegex("Resend: (\\d+)");
-        if (std::regex_search(response, match, resendRegex)) {
+
+        std::string response(buffer);
+        if (response.find("ok") != std::string::npos) {
+            commandQueue.acknowledge();
+        }
+        else if (std::regex_search(response, match, resendRegex)) {
             size_t requestedLine = std::stoi(match[1].str());
             commandQueue.moveToLine(requestedLine);
         }
-
-        std::cout << response << std::endl;
+        else {
+            std::cout << response << std::flush;
+        }
     }
 }
 
@@ -387,36 +439,25 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    size_t commandsSentLast = 0;
-    size_t commandsSent = 0;
     bool running = true;
 
     while (running) {
-        bool canSendCommands = (commandsSent - commandsAcknowledged < maxOutstandingCommands);
 
         std::string line;
-        if (canSendCommands && sourceManager.getNextLine(line)) {          
-            commandsSentLast = commandsSent;
+        if (commandQueue.canAddCommands() && sourceManager.getNextLine(line)) {          
             commandQueue.add(line);
         } else {
             readSerialResponse(serialPort, true); // block if we are not reading new lines
         }
 
-        while (commandQueue && canSendCommands) {
+        while (commandQueue && commandQueue.canAddCommands()) {
             const std::string& command = commandQueue.get();
             ssize_t bytes_written = serialPort.writeData(command);
-            if (bytes_written > 0) {
-                if (commandsSent == SIZE_MAX) {
-                    // Smartly handle commands sent so that we don't overflow
-                    commandsSent = commandsSent - commandsAcknowledged;
-                    commandsSentLast = commandsSentLast - commandsAcknowledged;
-                    commandsAcknowledged = 0;
-                }
-                commandsSent++;
-            } else if (bytes_written == -1) {
+            if (bytes_written == -1) {
                 std::cerr << "Serial write error" << std::endl;
                 throw std::runtime_error("Serial Write Did not Succeed");
             }
+                
             readSerialResponse(serialPort);
         }
     }
