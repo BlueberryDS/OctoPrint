@@ -385,15 +385,17 @@ int main(int argc, char* argv[]) {
     bool running = true;
 
     while (running) {
+        bool canSendCommands = (commandsSent - commandsAcknowledged < maxOutstandingCommands);
+
         std::string line;
-        if ((commandsSent > commandsSentLast || commandsSent == 0) && sourceManager.getNextLine(line)) {          
+        if (canSendCommands && sourceManager.getNextLine(line)) {          
             commandsSentLast = commandsSent;
             commandQueue.add(line);
         } else {
             readSerialResponse(serialPort, true); // block if we are not reading new lines
         }
 
-        while (commandQueue && (commandsSent - commandsAcknowledged < maxOutstandingCommands)) {
+        while (commandQueue && canSendCommands) {
             const std::string& command = commandQueue.get();
             ssize_t bytes_written = serialPort.writeData(command);
             if (bytes_written > 0) {
