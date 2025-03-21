@@ -271,6 +271,23 @@ private:
     const size_t maxQueueSize = 300;
     size_t cursorLineNumber = 0;
     size_t cursor = 0;
+
+    std::string addChecksum(const std::string& command, size_t lineNumber) {
+        int checksum = 0;
+        for (char c : command) {
+            checksum ^= c;
+        }
+        std::ostringstream formattedCommand;
+    
+        if (lineNumber == 0) {
+            commandQueue.push_back("M110 N0"); // Reset line number
+            lineNumber++; // Next line number would be N1 
+        }
+    
+        formattedCommand << "N" << lineNumber << " "<< command << "*" << checksum << "\n";
+    
+        return formattedCommand.str();
+    }
 public:
     void moveToLine(size_t requestedLine) {
         if (requestedLine < cursorLineNumber) {
@@ -288,7 +305,9 @@ public:
     }
 
     void add(std::string command) {
-        commandQueue.push_back(command);
+        commandQueue.push_back(addChecksum(
+            command,
+            commandQueue.size() - cursor + cursorLineNumber));
 
         if (commandQueue.size() > maxQueueSize) {
             commandQueue.pop_front();
@@ -316,22 +335,7 @@ public:
     }
 } commandQueue;
 
-std::string addChecksum(const std::string& command) {
-    int checksum = 0;
-    for (char c : command) {
-        checksum ^= c;
-    }
-    std::ostringstream formattedCommand;
 
-    if (lineNumber != SIZE_MAX) { // Skip a line number to reset
-        formattedCommand << "N" << lineNumber << " ";
-    }
-    lineNumber++;
-
-    formattedCommand << command << "*" << checksum << "\n";
-
-    return formattedCommand.str();
-}
 
 void readSerialResponse(SerialPort& serialPort, bool blocking = false) {
     char buffer[256];
@@ -384,9 +388,7 @@ int main(int argc, char* argv[]) {
         std::string line;
         if ((commandsSent > commandsSentLast || commandsSent == 0) && sourceManager.getNextLine(line)) {          
             commandsSentLast = commandsSent;
-
-            std::string formattedCommand = addChecksum(line);
-            commandQueue.add(formattedCommand);
+            commandQueue.add(line);
         } else {
             readSerialResponse(serialPort, true); // block if we are not reading new lines
         }
