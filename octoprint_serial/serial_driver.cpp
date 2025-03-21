@@ -273,27 +273,33 @@ private:
     size_t cursor = 0;
 
     std::string addChecksum(const std::string& command, size_t lineNumber) {
-        int checksum = 0;
-        for (char c : command) {
-            checksum ^= c;
-        }
         std::ostringstream formattedCommand;
     
         if (lineNumber == 0) {
-            commandQueue.push_back("M110 N0"); // Reset line number
+            std::cerr << "Warning: Line number is 0, resetting to 1" << std::endl;
+            commandQueue.push_back("M110 N1"); // Reset line number
             lineNumber++; // Next line number would be N1 
         }
     
-        formattedCommand << "N" << lineNumber << " "<< command << "*" << checksum << "\n";
+        formattedCommand << "N" << lineNumber << " "<< command;
+        
+        char checksum = 0;
+        for (char c : command) {
+            checksum ^= c;
+        }
+    
+        if (lineNumber == 0) {
+            std::cerr << "Warning: Line number is 0, resetting to 1" << std::endl;
+            commandQueue.push_back("M110 N1"); // Reset line number
+            lineNumber++; // Next line number would be N1 
+        }
+    
+        formattedCommand << "*" << checksum << "\n";
     
         return formattedCommand.str();
     }
 public:
     void moveToLine(size_t requestedLine) {
-        if (requestedLine < cursorLineNumber) {
-            std::cerr << "Error: Resend request for line " << requestedLine << " is no longer available in queue" << std::endl;
-            return;
-        }
         auto requestedCursor = cursor + (requestedLine - cursorLineNumber);
         if (requestedCursor >= 0) {
             cursor = requestedCursor;
