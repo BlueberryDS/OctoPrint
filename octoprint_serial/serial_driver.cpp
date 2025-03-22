@@ -10,9 +10,18 @@
 #include <errno.h>
 #include <regex>
 #include <cstring>
+#include <thread>
+#include <chrono>
 
-bool verbose = false;
-
+// Structure to hold parsed arguments
+struct Args {
+    std::string serialPortName;
+    int baudRate = 0;
+    std::string inputSource;
+    bool interactiveMode = false;
+    bool verbose = false;
+    bool sendBusy = false;
+};
 
 /*
  * FileDescriptorFlagGuard: RAII guard to temporarily set and restore file descriptor flags.
@@ -56,8 +65,8 @@ class FileDescriptorFlagGuard {
 
 class SerialPort {
 public:
-    SerialPort(const std::string& port, int baudRate)
-        : port(port), baudRate(baudRate), fd(-1) {}
+    SerialPort(const Args& args)
+        : port(args.serialPortName), baudRate(args.baudRate), fd(-1) {}
 
     ~SerialPort() {
         if (fd != -1) {
@@ -175,7 +184,7 @@ class InputSourceManager {
         }
 
         // Configuration for stdin
-        static void configureStdin() {
+        void configureStdin() {
             struct termios tty;
             if (tcgetattr(STDIN_FILENO, &tty) != 0) {
                 std::cerr << "Warning: Error getting stdin attributes: " << strerror(errno) << std::endl;
@@ -194,19 +203,26 @@ class InputSourceManager {
         }
     
         // Open a file and return a stream, or nullptr on failure
-        static std::unique_ptr<std::ifstream> openFile(const std::string& filename) {
+        std::unique_ptr<std::ifstream> openFile(const std::string& filename) {
             auto stream = std::make_unique<std::ifstream>(filename);
             if (!stream->is_open()) {
                 std::cerr << "Failed to open file: " << filename << std::endl;
                 return nullptr;
             }
+            // Save total file size
+            stream->seekg(0, std::ios::end);
+            totalFileSize_ = fileStream_->tellg();
+            stream->seekg(0, std::ios::beg);
+
             return stream;
         }
     
         // State
-        bool interactive_;                          // Whether stdin is active
         std::unique_ptr<std::ifstream> fileStream_; // Optional file stream
-    
+        const Args& args_;
+        std::chrono::time_point<std::chrono::steady_clock> lastBusyTime_;
+        std::streampos totalFileSize_ = 0;
+
         // Try reading a line from stdin (non-blocking)
         bool tryReadStdin(std::string& line) {
             char buffer[256];
@@ -228,6 +244,8 @@ class InputSourceManager {
     
         // Try reading a line from the file (blocking)
         bool readFile(std::string& line) {
+            sendBusyMessageIfNeeded();
+
             if (!fileStream_ || !fileStream_->good()) {
                 fileStream_.reset();  // Clear if EOF or error
                 return false;
@@ -245,36 +263,63 @@ class InputSourceManager {
             if (newStream) {
                 fileStream_ = std::move(newStream);
                 std::cerr << "Opened file: " << filename << std::endl;
+                if (args_.sendBusy) {
+                    lastBusyTime_ = std::chrono::steady_clock::now();
+                }
+            }
+        }
+
+        // Get file progress
+        std::string getFileProgress() {
+            if (fileStream_) {
+                auto currentPos = fileStream_->tellg();
+                return std::to_string(currentPos) + "/" + std::to_string(totalFileSize_);
+            }
+            return "0/0";
+        }
+
+        // Send busy message if needed
+        void sendBusyMessageIfNeeded() {
+            if (args_.sendBusy) {
+                auto now = std::chrono::steady_clock::now();
+                if (std::chrono::duration_cast<std::chrono::seconds>(now - lastBusyTime_).count() >= 2) {
+                    std::cout << "echo:busy: Printing from File" << std::endl;
+                    std::cout << "File Progress " << getFileProgress() << std::endl;
+                    lastBusyTime_ = now;
+                }
             }
         }
     
     public:
-        InputSourceManager(const std::string& source, bool interactive) 
-            : interactive_(interactive) {
-            if (interactive_) {
+        InputSourceManager(const Args& args) 
+            :args_(args) {
+            if (args.interactiveMode) {
                 std::cerr << "Starting in interactive mode" << std::endl;
                 configureStdin();
             }
-            if (!interactive && !source.empty()) {
-                std::cerr << "Starting with file: " << source << std::endl;
-                fileStream_ = openFile(source);
+            if (!args.interactiveMode && !args.inputSource.empty()) {
+                std::cerr << "Starting with file: " << args.inputSource << std::endl;
+                fileStream_ = openFile(args.inputSource);
                 if (!fileStream_) {
                     throw std::runtime_error("File opening failed");
+                }
+                if (args.sendBusy) {
+                    lastBusyTime_ = std::chrono::steady_clock::now();
                 }
             }
         }
     
         explicit operator bool() const {
-            return interactive_ || fileStream_;
+            return args_.interactiveMode || fileStream_;
         }
     
         bool getNextLine(std::string& line) {
                 bool gotLine = false;
     
                 // Try stdin if it's our turn and we're interactive
-                if (interactive_) {
+                if (args_.interactiveMode) {
                     gotLine = tryReadStdin(line);
-                    if (gotLine && !verbose) {
+                    if (gotLine && !args_.verbose) {
                         // Fake OK for all stdinputs in non-verbose mode
                         std::cout << "ok" << std::endl;
                     }
@@ -401,7 +446,7 @@ public:
     }
 } commandQueue;
 
-void readSerialResponse(SerialPort& serialPort, bool blocking = false) {
+void readSerialResponse(SerialPort& serialPort, bool blocking, const Args& args) {
     char buffer[256];
     int n = serialPort.readData(buffer, sizeof(buffer) - 1, blocking);
     if (n > 0) {
@@ -412,14 +457,14 @@ void readSerialResponse(SerialPort& serialPort, bool blocking = false) {
         std::string response(buffer);
         if (response.find("ok") != std::string::npos) {
             commandQueue.acknowledge();
-            if(verbose) {
+            if(args.verbose) {
                 std::cout << response << std::flush;
             }
         }
         else if (std::regex_search(response, match, resendRegex)) {
             size_t requestedLine = std::stoi(match[1].str());
             commandQueue.moveToLine(requestedLine);
-            if(verbose) {
+            if(args.verbose) {
                 std::cout << response << std::flush;
             }
         }
@@ -429,15 +474,6 @@ void readSerialResponse(SerialPort& serialPort, bool blocking = false) {
     }
 }
 
-// Structure to hold parsed arguments
-struct Args {
-    std::string serialPortName;
-    int baudRate = 0;
-    std::string inputSource;
-    bool interactiveMode = false;
-    bool verbose = false;
-};
-
 // Function to display usage
 void printUsage(const char* programName) {
     std::cerr << "Usage: " << programName << " <serial_port> <baud_rate> <gcode_file | --interactive> [options]\n"
@@ -446,7 +482,8 @@ void printUsage(const char* programName) {
               << "  <baud_rate>          Baud rate (e.g., 115200)\n"
               << "  <gcode_file | --interactive>  G-code file path or --interactive for stdin\n"
               << "Options:\n"
-              << "  --verbose            Enable verbose logging\n";
+              << "  --verbose            Enable verbose logging\n"
+              << "  --sendbusy           Enable Fake Busy signals when file processing\n";
 }
 
 // Function to parse arguments with stubs
@@ -481,6 +518,8 @@ Args parseArguments(int argc, char* argv[]) {
         std::string arg = argv[i];
         if (arg == "--verbose") {
             args.verbose = true;
+        } else if (arg == "--sendbusy") {
+            args.sendBusy = true;
         } else {
             std::cerr << "Error: Unknown option '" << arg << "'\n";
             printUsage(argv[0]);
@@ -504,16 +543,13 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    verbose = args.verbose;
-    
-
-    InputSourceManager sourceManager(args.inputSource, args.interactiveMode);
+    InputSourceManager sourceManager(args);
 
     if (!sourceManager) {
         return 1;
     }
 
-    SerialPort serialPort(args.serialPortName, args.baudRate);
+    SerialPort serialPort(args);
     if (!serialPort.openPort()) {
         return 1;
     }
@@ -526,7 +562,7 @@ int main(int argc, char* argv[]) {
         if (commandQueue.canAddCommands() && sourceManager.getNextLine(line)) {          
             commandQueue.add(line);
         } else {
-            readSerialResponse(serialPort, true); // block if we are not reading new lines
+            readSerialResponse(serialPort, true, args); // block if we are not reading new lines
         }
 
         while (commandQueue && commandQueue.canAddCommands()) {
@@ -537,7 +573,7 @@ int main(int argc, char* argv[]) {
                 throw std::runtime_error("Serial Write Did not Succeed");
             }
                 
-            readSerialResponse(serialPort);
+            readSerialResponse(serialPort, false, args);
         }
     }
     return 0;
