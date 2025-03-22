@@ -211,7 +211,7 @@ class InputSourceManager {
             }
             // Save total file size
             stream->seekg(0, std::ios::end);
-            totalFileSize_ = fileStream_->tellg();
+            totalFileSize_ = stream->tellg();
             stream->seekg(0, std::ios::beg);
 
             return stream;
