@@ -554,17 +554,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    commandQueue.add("M115"); // Start with an initial GCode command to coordinate the line numbers
+
     bool running = true;
 
     while (running) {
-
-        std::string line;
-        if (commandQueue.canAddCommands() && sourceManager.getNextLine(line)) {          
-            commandQueue.add(line);
-        } else {
-            readSerialResponse(serialPort, true, args); // block if we are not reading new lines
-        }
-
         while (commandQueue && commandQueue.canAddCommands()) {
             const std::string& command = commandQueue.get();
             ssize_t bytes_written = serialPort.writeData(command);
@@ -575,6 +569,13 @@ int main(int argc, char* argv[]) {
                 
             readSerialResponse(serialPort, false, args);
         }
+
+        std::string line;
+        if (commandQueue.canAddCommands() && sourceManager.getNextLine(line)) {          
+            commandQueue.add(line);
+        } else {
+            readSerialResponse(serialPort, true, args); // block if we are not reading new lines
+        }        
     }
     return 0;
 }
