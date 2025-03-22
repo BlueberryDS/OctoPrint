@@ -96,7 +96,7 @@ public:
         // CLOCAL: Ignore modem control lines; CREAD: Enable receiver
         tty.c_cflag |= (CLOCAL | CREAD);
         tty.c_cflag &= ~PARENB;           // No parity
-        tty.c_cflag &= ~CSTOPB;           // One stop bit
+        tty.c_cflag |= CSTOPB;            // Two stop bits
         tty.c_cflag &= ~CSIZE;            // Clear character size
         tty.c_cflag |= CS8;               // 8-bit characters
         // ICANON: Enable canonical mode for line-based input; reads return full lines or nothing
@@ -357,18 +357,11 @@ private:
     const size_t maxQueueSize = 100;
     size_t cursorLineNumber = 0;
     size_t cursor = 0;
-    size_t commandsSent = 0;
-    size_t commandsAcknowledged = 0;
-    const char* M110_ZERO = "M110 N0*35\n"; // with checksum
+    size_t lineAcknowledged = 0;
+    const char* M110 = "M110"; // with checksum
 
     std::string addChecksum(const std::string& command, size_t lineNumber) {
         std::ostringstream formattedCommand;
-    
-        if (lineNumber == 0) {
-            std::cerr << "Warning: Line number is 0, resetting to 0" << std::endl;
-            commandQueue.push_back(M110_ZERO); // Reset line number
-            lineNumber++; // Next line number would be N1 
-        }
     
         formattedCommand << "N" << lineNumber << " "<< command;
         
@@ -393,7 +386,7 @@ public:
         if (requestedCursor >= 0) {
             cursor = requestedCursor;
             cursorLineNumber = requestedLine;
-            commandsSent -= rewindRequested; // Anything after the resend would have been ignored;
+            std::cerr << "Resending from line " << requestedLine << std::endl;
         } else {
             std::cerr << "Error: Requested line " << requestedLine << " is out of range." << std::endl;
             throw std::runtime_error("Retry cannot be performed, all is lost.");
@@ -401,9 +394,16 @@ public:
     }
 
     void add(std::string command) {
+        auto lineNumber = commandQueue.size() - cursor + cursorLineNumber;
+        if (lineNumber == 0) {
+            std::cerr << "Warning: Line number is 0, resetting to 0" << std::endl;
+            commandQueue.push_back(addChecksum(M110, lineNumber)); // Reset line number
+            lineNumber++; // Next line number would be N1 
+        }
+
         commandQueue.push_back(addChecksum(
             command,
-            commandQueue.size() - cursor + cursorLineNumber)); // Calculate line number at end of queue
+            lineNumber)); // Calculate line number at end of queue
 
         if (commandQueue.size() > maxQueueSize) {
             commandQueue.pop_front();
@@ -419,25 +419,18 @@ public:
         return cursor < commandQueue.size();
     }
 
-    bool canAddCommands() const {
-        return (commandsSent - commandsAcknowledged < maxOutstandingCommands);
+    bool canSendCommands() const {
+        return (cursorLineNumber - lineAcknowledged < maxOutstandingCommands);
     }
 
-    void acknowledge() {
-        commandsAcknowledged++;
+    void acknowledge(int lineNo) {
+        lineAcknowledged=lineNo;
     }
     
     const std::string& get() {
         if (*this) {
             cursorLineNumber++;
             cursor++;
-
-            if (commandsSent == SIZE_MAX) {
-                // Smartly handle commands sent so that we don't overflow
-                commandsSent = commandsSent - commandsAcknowledged;
-                commandsAcknowledged = 0;
-            }
-            commandsSent++;
 
             return commandQueue[cursor-1];
         }
@@ -456,7 +449,12 @@ void readSerialResponse(SerialPort& serialPort, bool blocking, const Args& args)
 
         std::string response(buffer);
         if (response.find("ok") != std::string::npos) {
-            commandQueue.acknowledge();
+            std::regex okRegex("ok N(\\d+)");
+            if (std::regex_search(response, match, okRegex)) {
+                int lineNo = std::stoi(match[1].str());
+                commandQueue.acknowledge(lineNo);
+            } // Ignore extraineous OKs
+
             if(args.verbose) {
                 std::cout << response << std::flush;
             }
@@ -559,7 +557,7 @@ int main(int argc, char* argv[]) {
     bool running = true;
 
     while (running) {
-        while (commandQueue && commandQueue.canAddCommands()) {
+        while (commandQueue && commandQueue.canSendCommands()) {
             const std::string& command = commandQueue.get();
             ssize_t bytes_written = serialPort.writeData(command);
             if (bytes_written == -1) {
@@ -571,7 +569,7 @@ int main(int argc, char* argv[]) {
         }
 
         std::string line;
-        if (commandQueue.canAddCommands() && sourceManager.getNextLine(line)) {          
+        if (commandQueue.canSendCommands() && sourceManager.getNextLine(line)) {          
             commandQueue.add(line);
         } else {
             readSerialResponse(serialPort, true, args); // block if we are not reading new lines
