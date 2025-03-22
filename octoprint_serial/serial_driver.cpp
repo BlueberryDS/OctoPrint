@@ -11,6 +11,9 @@
 #include <regex>
 #include <cstring>
 
+bool verbose = false;
+
+
 /*
  * FileDescriptorFlagGuard: RAII guard to temporarily set and restore file descriptor flags.
  * Ensures flags are restored when the guard goes out of scope, keeping writes blocking
@@ -271,6 +274,10 @@ class InputSourceManager {
                 // Try stdin if it's our turn and we're interactive
                 if (interactive_) {
                     gotLine = tryReadStdin(line);
+                    if (gotLine && !verbose) {
+                        // Fake OK for all stdinputs in non-verbose mode
+                        std::cout << "ok" << std::endl;
+                    }
                 }
                 // Try file if it's our turn or stdin failed
                 
@@ -293,16 +300,16 @@ class InputSourceManager {
                     handleOpenFile(line);
                     return false;
                 }
-    
+
                 return true;  // Got a valid line
         }
     };
 
 class LineQueue {
 private:
-    const size_t maxOutstandingCommands = 60;
+    const size_t maxOutstandingCommands = 30;
     std::deque<std::string> commandQueue;
-    const size_t maxQueueSize = 300;
+    const size_t maxQueueSize = 100;
     size_t cursorLineNumber = 0;
     size_t cursor = 0;
     size_t commandsSent = 0;
@@ -405,10 +412,16 @@ void readSerialResponse(SerialPort& serialPort, bool blocking = false) {
         std::string response(buffer);
         if (response.find("ok") != std::string::npos) {
             commandQueue.acknowledge();
+            if(verbose) {
+                std::cout << response << std::flush;
+            }
         }
         else if (std::regex_search(response, match, resendRegex)) {
             size_t requestedLine = std::stoi(match[1].str());
             commandQueue.moveToLine(requestedLine);
+            if(verbose) {
+                std::cout << response << std::flush;
+            }
         }
         else {
             std::cout << response << std::flush;
@@ -416,25 +429,91 @@ void readSerialResponse(SerialPort& serialPort, bool blocking = false) {
     }
 }
 
+// Structure to hold parsed arguments
+struct Args {
+    std::string serialPortName;
+    int baudRate = 0;
+    std::string inputSource;
+    bool interactiveMode = false;
+    bool verbose = false;
+};
+
+// Function to display usage
+void printUsage(const char* programName) {
+    std::cerr << "Usage: " << programName << " <serial_port> <baud_rate> <gcode_file | --interactive> [options]\n"
+              << "Required arguments:\n"
+              << "  <serial_port>         Serial port (e.g., /dev/ttyUSB0)\n"
+              << "  <baud_rate>          Baud rate (e.g., 115200)\n"
+              << "  <gcode_file | --interactive>  G-code file path or --interactive for stdin\n"
+              << "Options:\n"
+              << "  --verbose            Enable verbose logging\n";
+}
+
+// Function to parse arguments with stubs
+Args parseArguments(int argc, char* argv[]) {
+    Args args;
+
+    // Check for minimum arguments or help flag
+    if (argc < 4 || std::string(argv[1]) == "--help") {
+        printUsage(argv[0]);
+        if (argc < 4) {
+            throw std::runtime_error("Insufficient arguments");
+        }
+        // For --help, we'll return default args after printing usage
+        args.serialPortName = ""; // Invalid to force exit after help
+        return args;
+    }
+
+    // Required arguments
+    args.serialPortName = argv[1];
+    try {
+        args.baudRate = std::stoi(argv[2]);
+    } catch (const std::exception& e) {
+        std::cerr << "Error: Invalid baud rate '" << argv[2] << "': " << e.what() << std::endl;
+        printUsage(argv[0]);
+        throw;
+    }
+    args.inputSource = argv[3];
+    args.interactiveMode = (args.inputSource == "--interactive");
+
+    // Process optional arguments
+    for (int i = 4; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--verbose") {
+            args.verbose = true;
+        } else {
+            std::cerr << "Error: Unknown option '" << arg << "'\n";
+            printUsage(argv[0]);
+            throw std::runtime_error("Unknown option");
+        }
+    }
+
+    return args;
+}
+
 int main(int argc, char* argv[]) {
-    if (argc < 4) {
-        std::cerr << "Usage: " << argv[0] << " <serial_port> <baud_rate> <gcode_file | --interactive>" << std::endl;
+    Args args;
+    try {
+        args = parseArguments(argc, argv);
+    } catch (const std::exception& e) {
         return 1;
     }
 
-    std::string serialPortName = argv[1];
-    int baudRate = std::stoi(argv[2]);
-    std::string inputSource = argv[3];
-    bool interactiveMode = (std::string(argv[3]) == "--interactive");
+    // Exit cleanly after --help
+    if (args.serialPortName.empty()) {
+        return 0;
+    }
+
+    verbose = args.verbose;
     
 
-    InputSourceManager sourceManager(inputSource, interactiveMode);
+    InputSourceManager sourceManager(args.inputSource, args.interactiveMode);
 
     if (!sourceManager) {
         return 1;
     }
 
-    SerialPort serialPort(serialPortName, baudRate);
+    SerialPort serialPort(args.serialPortName, args.baudRate);
     if (!serialPort.openPort()) {
         return 1;
     }
