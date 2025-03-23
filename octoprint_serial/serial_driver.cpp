@@ -314,7 +314,9 @@ class InputSourceManager {
         }
     
         bool getNextLine(std::string& line) {
-                bool gotLine = false;
+            bool gotLine = false;
+
+            while (!gotLine) {
     
                 // Try stdin if it's our turn and we're interactive
                 if (args_.interactiveMode) {
@@ -337,7 +339,7 @@ class InputSourceManager {
                 line = stripComments(line);
 
                 if(line.empty()) {
-                    return false;  // Empty line after stripping
+                    continue;  // Empty line after stripping
                 }
     
                 // Check for "OpenFile" command
@@ -347,6 +349,7 @@ class InputSourceManager {
                 }
 
                 return true;  // Got a valid line
+            }
         }
     };
 
