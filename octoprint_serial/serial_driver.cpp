@@ -317,7 +317,6 @@ class InputSourceManager {
             bool gotLine = false;
 
             while (!gotLine) {
-    
                 // Try stdin if it's our turn and we're interactive
                 if (args_.interactiveMode) {
                     gotLine = tryReadStdin(line);
@@ -339,7 +338,7 @@ class InputSourceManager {
                 line = stripComments(line);
 
                 if(line.empty()) {
-                    continue;  // Empty line after stripping
+                    continue;  // Skip Empty Lines
                 }
     
                 // Check for "OpenFile" command
@@ -347,9 +346,8 @@ class InputSourceManager {
                     handleOpenFile(line);
                     return false;
                 }
-
-                return true;  // Got a valid line
             }
+            return true;  // Got a valid line
         }
     };
 
@@ -361,6 +359,7 @@ private:
     size_t cursorLineNumber = 0;
     size_t cursor = 0;
     size_t lineAcknowledged = 0;
+    size_t interbuffer = 0; // Estimate of how many requests are in the serial buffer only
     const char* M110 = "M110"; // with checksum
 
     std::string addChecksum(const std::string& command, size_t lineNumber) {
@@ -385,6 +384,7 @@ public:
         }
         
         auto rewindRequested = (cursorLineNumber - requestedLine);
+        interbuffer = rewindRequested; // Rewind status means we have stuff in the interbuffer for sure
         auto requestedCursor = cursor - rewindRequested;
         if (requestedCursor >= 0) {
             cursor = requestedCursor;
@@ -423,11 +423,19 @@ public:
     }
 
     bool canSendCommands() const {
-        return (cursorLineNumber - lineAcknowledged < maxOutstandingCommands);
+        // Subtract to interbuffer-amount from the maxOutstandingCommands to try to avoid
+        // overrunning the serial buffer, but always allow one extra command to be
+        // sent so we can actually fill the ascii buffer.
+        return (cursorLineNumber - lineAcknowledged <= maxOutstandingCommands - interbuffer);
     }
 
-    void acknowledge(int lineNo) {
+    void acknowledge(size_t lineNo, int stepperBuffer, int asciiBuffer) {
         lineAcknowledged=lineNo;
+
+        // Read the ascii buffer size to estimate how many commands are in the serial buffer
+        if(asciiBuffer >= 0) {
+            interbuffer = cursorLineNumber - lineAcknowledged - (maxOutstandingCommands - asciiBuffer);
+        }
     }
     
     const std::string& get() {
@@ -455,8 +463,20 @@ void readSerialResponse(SerialPort& serialPort, bool blocking, const Args& args)
             std::regex okRegex("ok N(\\d+)");
             if (std::regex_search(response, match, okRegex)) {
                 int lineNo = std::stoi(match[1].str());
-                commandQueue.acknowledge(lineNo);
-            } // Ignore extraineous OKs
+                std::regex pRegex("P(\\d+)");
+                std::regex bRegex("B(\\d+)");
+                int stepperBuffer = -1; // Signifies not sent
+                int asciiBuffer = -1;
+
+                if (std::regex_search(response, match, pRegex)) {
+                    stepperBuffer = std::stoi(match[1].str());
+                }
+                if (std::regex_search(response, match, bRegex)) {
+                    asciiBuffer = std::stoi(match[1].str());
+                }
+
+                commandQueue.acknowledge(lineNo, stepperBuffer, asciiBuffer);
+            } // Ignore extraneous OKs
 
             if(args.verbose) {
                 std::cout << response << std::flush;
