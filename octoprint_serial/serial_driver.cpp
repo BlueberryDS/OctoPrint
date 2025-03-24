@@ -21,6 +21,7 @@ struct Args {
     bool interactiveMode = false;
     bool verbose = false;
     bool sendBusy = false;
+    int serialBufferSize = 128;
 };
 
 /*
@@ -338,6 +339,7 @@ class InputSourceManager {
                 line = stripComments(line);
 
                 if(line.empty()) {
+                    gotLine = false;
                     continue;  // Skip Empty Lines
                 }
     
@@ -353,14 +355,19 @@ class InputSourceManager {
 
 class LineQueue {
 private:
-    size_t asciiBufferSize = 1;
+    const size_t maxLineLength = 96;
+    size_t serialBufferSize = 128;
+    size_t bytesSentSinceLastOK = 0;
+    int asciiBufferSize = 0;
     std::deque<std::string> commandQueue;
     const size_t maxQueueSize = 100;
     size_t cursorLineNumber = 0;
     size_t cursor = 0;
     size_t lineAcknowledged = 0;
-    size_t interbuffer = 0; // Estimate of how many requests are in the serial buffer only
+    int maxStepper = 0;
     const char* M110 = "M110"; // with checksum
+    size_t resendsToIgnore = 0;
+    size_t lastRequestedResendLine = 0;
 
     std::string addChecksum(const std::string& command, size_t lineNumber) {
         std::ostringstream formattedCommand;
@@ -374,22 +381,43 @@ private:
     
         formattedCommand << "*" << checksum << "\n";
     
-        return formattedCommand.str();
+        auto res = formattedCommand.str();
+
+        if (res.size() > maxLineLength) {
+            std::cerr << "Error: " << command << " is too long" << std::endl;
+            return addChecksum("M118 Too Long", lineNumber); // kill any lines longer than max length
+        }
+
+        return res;
     }
 public:
+    LineQueue (const Args& args) : serialBufferSize(args.serialBufferSize) {}
+
     void moveToLine(size_t requestedLine) {
         if (requestedLine > cursorLineNumber) {
             std::cerr << "Error: Requested line " << requestedLine << " is ahead of current line " << cursorLineNumber << std::endl;
             throw std::runtime_error("Retry cannot be performed, all is lost.");
         }
+
+        if (resendsToIgnore && requestedLine == lastRequestedResendLine) {
+            resendsToIgnore--; // Since we pack the buffer, the firmware will send multiple resends
+            return;
+        } else if (resendsToIgnore && requestedLine < lastRequestedResendLine) { // This misses an error condition when the lines overflow, but assume unlikely
+            std::cerr << "Error: Resend " << requestedLine << " requested which less than previous resend" << std::endl;
+            throw std::runtime_error("Retry cannot be performed, all is lost.");
+        } // If a resend is issued for a further line, assume we've passed the previous retry
+
         
         auto rewindRequested = (cursorLineNumber - requestedLine);
-        interbuffer = rewindRequested + 1; // Rewind status means we have stuff in the interbuffer for sure + the rewinded request itself
         auto requestedCursor = cursor - rewindRequested;
         if (requestedCursor >= 0) {
+            std::cerr << "Resending from line " << requestedLine << " rewinding from " << cursorLineNumber << std::endl;
             cursor = requestedCursor;
             cursorLineNumber = requestedLine;
-            std::cerr << "Resending from line " << requestedLine << std::endl;
+
+            // Store Resend related information
+            resendsToIgnore = rewindRequested; // This is the number of lines we've packed into the buffer
+            lastRequestedResendLine = requestedLine;
         } else {
             std::cerr << "Error: Requested line " << requestedLine << " is out of range." << std::endl;
             throw std::runtime_error("Retry cannot be performed, all is lost.");
@@ -423,40 +451,57 @@ public:
     }
 
     bool canSendCommands() const {
-        // Subtract to interbuffer-amount from the asciiBufferSize to try to avoid
-        // overrunning the serial buffer, but always allow one extra command to be
-        // sent so we can actually fill the ascii buffer.
-        return (cursorLineNumber - lineAcknowledged <= asciiBufferSize - interbuffer);
+        // Both the queue and the serial buffer need to have space
+        return *this
+                // reserve a portion of the ascii buffer for injected commands
+                && (cursorLineNumber - lineAcknowledged < asciiBufferSize * 0.75) 
+                 // make sure we aren't overrunning the buffer
+                && (serialBufferSize - bytesSentSinceLastOK > commandQueue[cursor].size())
+                // If we are currently in resend status, give it a chance to catch up.
+                // We do this because buffer size is unknowable while in resend status.
+                && (!lastRequestedResendLine || cursorLineNumber - lineAcknowledged < 1); 
     }
 
     void acknowledge(size_t lineNo, int stepperBuffer, int asciiBuffer) {
         lineAcknowledged=lineNo;
+        bytesSentSinceLastOK = 0;
+
+        if (lineNo >= lastRequestedResendLine) { // If we've successfully processed the resend, then we can reset the resend counter
+            lastRequestedResendLine = 0;
+            resendsToIgnore = 0;
+        }
+
+        if (stepperBuffer > maxStepper) {
+            std::cerr << "Setting stepper buffer size to " << stepperBuffer << std::endl;
+            maxStepper = stepperBuffer;
+        }
+        
+        if (stepperBuffer > maxStepper * 0.9) {
+            std::cerr << "Warning: Stepper buffer is almost empty" << std::endl;
+        }
         
         // Dynamically detect the size of the ascii buffer
         if (asciiBufferSize < asciiBuffer) {
             std::cerr << "Setting ascii buffer size to " << asciiBuffer << std::endl;
             asciiBufferSize = asciiBuffer;
         }
-
-        // Read the ascii buffer size to estimate how many commands are in the serial buffer
-        if(asciiBuffer >= 0) {
-            interbuffer = cursorLineNumber - lineAcknowledged - (asciiBufferSize - asciiBuffer);
-        }
     }
     
     const std::string& get() {
         if (*this) {
             cursorLineNumber++;
-            cursor++;
+            auto& ret = commandQueue[cursor++];
 
-            return commandQueue[cursor-1];
+            bytesSentSinceLastOK += ret.size();
+
+            return ret;
         }
 
         throw std::runtime_error("Invalid Access to queue");
     }
-} commandQueue;
+};
 
-void readSerialResponse(SerialPort& serialPort, bool blocking, const Args& args) {
+void readSerialResponse(SerialPort& serialPort, LineQueue & queue,bool blocking, const Args& args) {
     char buffer[256];
     int n = serialPort.readData(buffer, sizeof(buffer) - 1, blocking);
     if (n > 0) {
@@ -481,7 +526,7 @@ void readSerialResponse(SerialPort& serialPort, bool blocking, const Args& args)
                     asciiBuffer = std::stoi(match[1].str());
                 }
 
-                commandQueue.acknowledge(lineNo, stepperBuffer, asciiBuffer);
+                queue.acknowledge(lineNo, stepperBuffer, asciiBuffer);
             } // Ignore extraneous OKs
 
             if(args.verbose) {
@@ -490,7 +535,7 @@ void readSerialResponse(SerialPort& serialPort, bool blocking, const Args& args)
         }
         else if (std::regex_search(response, match, resendRegex)) {
             size_t requestedLine = std::stoi(match[1].str());
-            commandQueue.moveToLine(requestedLine);
+            queue.moveToLine(requestedLine);
             if(args.verbose) {
                 std::cout << response << std::flush;
             }
@@ -500,7 +545,6 @@ void readSerialResponse(SerialPort& serialPort, bool blocking, const Args& args)
         }
     }
 }
-
 // Function to display usage
 void printUsage(const char* programName) {
     std::cerr << "Usage: " << programName << " <serial_port> <baud_rate> <gcode_file | --interactive> [options]\n"
@@ -510,7 +554,8 @@ void printUsage(const char* programName) {
               << "  <gcode_file | --interactive>  G-code file path or --interactive for stdin\n"
               << "Options:\n"
               << "  --verbose            Enable verbose logging\n"
-              << "  --sendbusy           Enable Fake Busy signals when file processing\n";
+              << "  --sendbusy           Enable Fake Busy signals when file processing\n"
+              << "  --serialbuffersize   Set the serial buffer size (default: 128)\n";
 }
 
 // Function to parse arguments with stubs
@@ -547,6 +592,20 @@ Args parseArguments(int argc, char* argv[]) {
             args.verbose = true;
         } else if (arg == "--sendbusy") {
             args.sendBusy = true;
+        } else if (arg == "--serialbuffersize") {
+            if (i + 1 < argc) {
+                try {
+                    args.serialBufferSize = std::stoi(argv[++i]);
+                } catch (const std::exception& e) {
+                    std::cerr << "Error: Invalid serial buffer size '" << argv[i] << "': " << e.what() << std::endl;
+                    printUsage(argv[0]);
+                    throw;
+                }
+            } else {
+                std::cerr << "Error: --serialbuffersize requires a value\n";
+                printUsage(argv[0]);
+                throw std::runtime_error("Missing value for --serialbuffersize");
+            }
         } else {
             std::cerr << "Error: Unknown option '" << arg << "'\n";
             printUsage(argv[0]);
@@ -557,16 +616,16 @@ Args parseArguments(int argc, char* argv[]) {
     return args;
 }
 
-void processCommandQueue(SerialPort& serialPort, const Args& args) {
-    while (commandQueue && commandQueue.canSendCommands()) {
-    const std::string& command = commandQueue.get();
+void processCommandQueue(SerialPort& serialPort, LineQueue& queue, const Args& args) {
+    while (queue.canSendCommands()) {
+    const std::string& command = queue.get();
     ssize_t bytes_written = serialPort.writeData(command);
     if (bytes_written == -1) {
         std::cerr << "Serial write error" << std::endl;
         throw std::runtime_error("Serial Write Did not Succeed");
     }
         
-    readSerialResponse(serialPort, false, args);
+    readSerialResponse(serialPort, queue, false, args);
     }
 }
 
@@ -594,21 +653,23 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    LineQueue commandQueue(args);
+
     commandQueue.add("M115"); // Start with an initial GCode command to coordinate the line numbers
-    processCommandQueue(serialPort, args);
+    processCommandQueue(serialPort, commandQueue, args);
 
 
     bool running = true;
 
     while (running) {
         std::string line;
-        if (commandQueue.canSendCommands() && sourceManager.getNextLine(line)) {          
+        if (!commandQueue && sourceManager.getNextLine(line)) {          
             commandQueue.add(line);
         } else {
-            readSerialResponse(serialPort, true, args); // block if we are not reading new lines
+            readSerialResponse(serialPort, commandQueue, true, args); // block if we are not reading new lines
         }
         
-        processCommandQueue(serialPort, args);
+        processCommandQueue(serialPort, commandQueue, args);
     }
 
     return 0;
