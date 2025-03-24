@@ -358,7 +358,7 @@ private:
     const size_t maxLineLength = 96;
     size_t serialBufferSize = 128;
     size_t bytesSentSinceLastOK = 0;
-    int asciiBufferSize = 0;
+    int asciiBufferSize = 4;
     std::deque<std::string> commandQueue;
     const size_t maxQueueSize = 100;
     size_t cursorLineNumber = 0;
@@ -459,7 +459,7 @@ public:
                 && (serialBufferSize - bytesSentSinceLastOK > commandQueue[cursor].size())
                 // If we are currently in resend status, give it a chance to catch up.
                 // We do this because buffer size is unknowable while in resend status.
-                && (!lastRequestedResendLine || cursorLineNumber - lineAcknowledged < 1); 
+                && (!lastRequestedResendLine || cursorLineNumber - lineAcknowledged <= 1); 
     }
 
     void acknowledge(size_t lineNo, int stepperBuffer, int asciiBuffer) {
