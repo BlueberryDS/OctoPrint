@@ -479,6 +479,9 @@ public:
         if (stepperBuffer > maxStepper * 0.9) {
             std::cerr << "Warning: Stepper buffer is almost empty" << std::endl;
         }
+        if (asciiBuffer > asciiBufferSize * 0.9) {
+            std::cerr << "Warning: Stepper buffer is almost empty" << std::endl;
+        }
         
         // Dynamically detect the size of the ascii buffer
         if (asciiBufferSize < asciiBuffer) {
@@ -618,14 +621,18 @@ Args parseArguments(int argc, char* argv[]) {
 
 void processCommandQueue(SerialPort& serialPort, LineQueue& queue, const Args& args) {
     while (queue.canSendCommands()) {
-    const std::string& command = queue.get();
-    ssize_t bytes_written = serialPort.writeData(command);
-    if (bytes_written == -1) {
-        std::cerr << "Serial write error" << std::endl;
-        throw std::runtime_error("Serial Write Did not Succeed");
-    }
-        
-    readSerialResponse(serialPort, queue, false, args);
+        const std::string& command = queue.get();
+        ssize_t bytes_written = serialPort.writeData(command);
+        if (bytes_written == -1) {
+            std::cerr << "Serial write error" << std::endl;
+            throw std::runtime_error("Serial Write Did not Succeed");
+        }
+
+        if (args.verbose) {
+            std::cout << command << std::endl;
+        }
+            
+        readSerialResponse(serialPort, queue, false, args);
     }
 }
 
