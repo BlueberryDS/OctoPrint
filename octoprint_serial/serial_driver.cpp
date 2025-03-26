@@ -150,209 +150,237 @@ private:
     int baudRate;
     int fd;
 };
+
 class InputSourceManager {
-    private:
-        void stripComments(std::string& line) {
-            std::string result;
-            bool inParentheses = false;
-            
-            for (size_t i = 0; i < line.length(); ++i) {
-            if (line[i] == '(') {
+private:
+    // Define a type alias for the FILE* smart pointer with fclose as deleter
+    using FilePtr = std::unique_ptr<FILE, int(*)(FILE*)>;
+    FilePtr fileStream_{nullptr, std::fclose}; // Initialize with nullptr and fclose
+    const Args& args_;
+    std::chrono::time_point<std::chrono::steady_clock> lastBusyTime_;
+    std::streampos totalFileSize_ = 0;
+
+    // Remove comments from a line (unchanged)
+    void stripComments(std::string& line) {
+        bool inParentheses = false;
+        size_t writePos = 0;
+    
+        // Filter the string in place
+        for (size_t readPos = 0; readPos < line.length(); ++readPos) {
+            if (line[readPos] == '(') {
                 inParentheses = true;
                 continue;
             }
-            if (line[i] == ')') {
+            if (line[readPos] == ')') {
                 inParentheses = false;
                 continue;
             }
-            if (line[i] == ';' && !inParentheses) {
-                break;  // Stop at semicolon if not in parentheses
+            if (line[readPos] == ';' && !inParentheses) {
+                break;  // Stop at semicolon outside parentheses
             }
             if (!inParentheses) {
-                result += line[i];
+                line[writePos++] = line[readPos];
             }
-            }
-            
-            // Remove leading and trailing whitespace
-            size_t start = result.find_first_not_of(" \t");
-            size_t end = result.find_last_not_of(" \t");
-            
-            if (start == std::string::npos) {
-            line.clear();  // Empty line after stripping
+        }
+    
+        // Handle empty or fully whitespace cases
+        if (writePos == 0) {
+            line.clear();
             return;
-            }
-            
-            line = result.substr(start, end - start + 1);
-        }
-
-        // Configuration for stdin
-        void configureStdin() {
-            struct termios tty;
-            if (tcgetattr(STDIN_FILENO, &tty) != 0) {
-                std::cerr << "Warning: Error getting stdin attributes: " << strerror(errno) << std::endl;
-                return;
-            }
-            tty.c_lflag |= ICANON;  // Line-based input
-            tty.c_cc[VMIN] = 1;
-            tty.c_cc[VTIME] = 0;
-            if (tcsetattr(STDIN_FILENO, TCSANOW, &tty) != 0) {
-                std::cerr << "Warning: Error setting stdin attributes: " << strerror(errno) << std::endl;
-            }
-            int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
-            if (flags == -1 || fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK) == -1) {
-                std::cerr << "Warning: Failed to set O_NONBLOCK on stdin: " << strerror(errno) << std::endl;
-            }
         }
     
-        // Open a file and return a stream, or nullptr on failure
-        std::unique_ptr<std::ifstream> openFile(const std::string& filename) {
-            auto stream = std::make_unique<std::ifstream>(filename);
-            if (!stream->is_open()) {
-                std::cerr << "Failed to open file: " << filename << std::endl;
-                return nullptr;
-            }
-            // Save total file size
-            stream->seekg(0, std::ios::end);
-            totalFileSize_ = stream->tellg();
-            stream->seekg(0, std::ios::beg);
-
-            return stream;
+        // Trim leading whitespace
+        size_t start = 0;
+        while (start < writePos && (line[start] == ' ' || line[start] == '\t')) {
+            ++start;
         }
     
-        // State
-        std::unique_ptr<std::ifstream> fileStream_; // Optional file stream
-        const Args& args_;
-        std::chrono::time_point<std::chrono::steady_clock> lastBusyTime_;
-        std::streampos totalFileSize_ = 0;
+        // Trim trailing whitespace
+        size_t end = writePos - 1;
+        while (end > start && (line[end] == ' ' || line[end] == '\t')) {
+            --end;
+        }
+    
+        // If all whitespace, clear the string
+        if (start > end) {
+            line.clear();
+            return;
+        }
+    
+        // Remove leading whitespace
+        if (start > 0) {
+            line.erase(0, start);
+            writePos -= start;
+            end -= start;
+        }
+    
+        // Remove trailing whitespace
+        if (end < writePos - 1) {
+            line.erase(end + 1);
+        }
+    }
 
-        // Try reading a line from stdin (non-blocking)
-        bool tryReadStdin(std::string& line) {
-            char buffer[256];
-            ssize_t n = read(STDIN_FILENO, buffer, sizeof(buffer) - 1);
-            if (n < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    return false;  // No full line available
-                }
-                std::cerr << "Read error from stdin: " << strerror(errno) << std::endl;
+    // Configure stdin for non-blocking, line-based input (unchanged)
+    void configureStdin() {
+        struct termios tty;
+        if (tcgetattr(STDIN_FILENO, &tty) != 0) {
+            std::cerr << "Warning: Error getting stdin attributes: " << strerror(errno) << std::endl;
+            return;
+        }
+        tty.c_lflag |= ICANON;
+        tty.c_cc[VMIN] = 1;
+        tty.c_cc[VTIME] = 0;
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &tty) != 0) {
+            std::cerr << "Warning: Error setting stdin attributes: " << strerror(errno) << std::endl;
+        }
+        int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+        if (flags == -1 || fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK) == -1) {
+            std::cerr << "Warning: Failed to set O_NONBLOCK on stdin: " << strerror(errno) << std::endl;
+        }
+    }
+
+    // Open a file using C-style functions and return a FilePtr
+    FilePtr openFile(const std::string& filename) {
+        FILE* fp = fopen(filename.c_str(), "r");
+        if (!fp) {
+            std::cerr << "Failed to open file: " << filename << std::endl;
+            return FilePtr(nullptr, std::fclose);
+        }
+        fseek(fp, 0, SEEK_END);
+        totalFileSize_ = ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+        return FilePtr(fp, std::fclose);
+    }
+
+    // Read a line from stdin (unchanged)
+    bool tryReadStdin(std::string& line) {
+        char buffer[256];
+        ssize_t n = read(STDIN_FILENO, buffer, sizeof(buffer) - 1);
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 return false;
             }
-            if (n == 0) return false;  // EOF (Ctrl+D)
-    
-            buffer[n] = '\0';
-            line = std::string(buffer);
-            if (!line.empty() && line.back() == '\n') line.pop_back();
-            return !line.empty();
-        }
-    
-        // Try reading a line from the file (blocking)
-        bool readFile(std::string& line) {
-            sendBusyMessageIfNeeded();
-
-            if (!fileStream_ || !fileStream_->good()) {
-                fileStream_.reset();  // Clear if EOF or error
-                return false;
-            }
-            if (std::getline(*fileStream_, line) && !line.empty()) {
-                return true;
-            }
+            std::cerr << "Read error from stdin: " << strerror(errno) << std::endl;
             return false;
         }
-    
-        // Handle "OpenFile" command
-        void handleOpenFile(const std::string& line) {
-            std::string filename = line.substr(9);
-            auto newStream = openFile(filename);
-            if (newStream) {
-                fileStream_ = std::move(newStream);
-                std::cerr << "Opened file: " << filename << std::endl;
-                if (args_.sendBusy) {
-                    lastBusyTime_ = std::chrono::steady_clock::now();
+        if (n == 0) return false;
+        
+        buffer[n] = '\0';
+        line = std::string(buffer);
+        if (!line.empty() && line.back() == '\n') line.pop_back();
+        return !line.empty();
+    }
+
+    // Read a line from the file using C-style functions
+    bool readFile(std::string& line) {
+        sendBusyMessageIfNeeded();
+        if (!fileStream_) {
+            return false;
+        }
+        line.clear();
+        char buffer[1024];
+        while (fgets(buffer, sizeof(buffer), fileStream_.get()) != nullptr) {
+            line += buffer;
+            if (!line.empty() && line.back() == '\n') {
+                line.pop_back();
+                if (!line.empty()) {
+                    return true;
                 }
+                line.clear();
             }
         }
-
-        // Get file progress
-        std::string getFileProgress() {
-            if (fileStream_) {
-                auto currentPos = fileStream_->tellg();
-                return std::to_string(currentPos) + "/" + std::to_string(totalFileSize_);
-            }
-            return "0/0";
+        // Handle EOF or error
+        if (!line.empty()) { // Last line without newline
+            return true;
         }
+        fileStream_.reset(); // Clear stream on EOF or error
+        return false;
+    }
 
-        // Send busy message if needed
-        void sendBusyMessageIfNeeded() {
+    // Handle "OpenFile" command
+    void handleOpenFile(const std::string& line) {
+        std::string filename = line.substr(9);
+        auto newStream = openFile(filename);
+        if (newStream) {
+            fileStream_ = std::move(newStream);
+            std::cerr << "Opened file: " << filename << std::endl;
             if (args_.sendBusy) {
-                auto now = std::chrono::steady_clock::now();
-                if (std::chrono::duration_cast<std::chrono::seconds>(now - lastBusyTime_).count() >= 2) {
-                    std::cout << "echo:busy: Printing from File" << std::endl;
-                    std::cout << "File Progress " << getFileProgress() << std::endl;
-                    lastBusyTime_ = now;
-                }
+                lastBusyTime_ = std::chrono::steady_clock::now();
             }
         }
-    
-    public:
-        InputSourceManager(const Args& args) 
-            :args_(args) {
-            if (args.interactiveMode) {
-                std::cerr << "Starting in interactive mode" << std::endl;
-                configureStdin();
-            }
-            if (!args.interactiveMode && !args.inputSource.empty()) {
-                std::cerr << "Starting with file: " << args.inputSource << std::endl;
-                fileStream_ = openFile(args.inputSource);
-                if (!fileStream_) {
-                    throw std::runtime_error("File opening failed");
-                }
-                if (args.sendBusy) {
-                    lastBusyTime_ = std::chrono::steady_clock::now();
-                }
-            }
-        }
-    
-        explicit operator bool() const {
-            return args_.interactiveMode || fileStream_;
-        }
-    
-        bool getNextLine(std::string& line) {
-            bool gotLine = false;
+    }
 
-            while (!gotLine) {
-                // Try stdin if it's our turn and we're interactive
-                if (args_.interactiveMode) {
-                    gotLine = tryReadStdin(line);
-                    if (gotLine && !args_.verbose) {
-                        // Fake OK for all stdinputs in non-verbose mode
-                        std::cout << "ok" << std::endl;
-                    }
-                }
-                // Try file if it's our turn or stdin failed
-                
-                if (fileStream_ && !gotLine) {
-                    gotLine = readFile(line);
-                }
-    
-                if (!gotLine) {
-                    return false;  // No line available
-                }
+    // Get file progress using ftell
+    std::string getFileProgress() {
+        if (fileStream_) {
+            auto currentPos = ftell(fileStream_.get());
+            return std::to_string(currentPos) + "/" + std::to_string(totalFileSize_);
+        }
+        return "0/0";
+    }
 
-                stripComments(line);
+    // Send busy message if needed (unchanged)
+    void sendBusyMessageIfNeeded() {
+        if (args_.sendBusy) {
+            auto now = std::chrono::steady_clock::now();
+            if (std::chrono::duration_cast<std::chrono::seconds>(now - lastBusyTime_).count() >= 2) {
+                std::cout << "echo:busy: Printing from File" << std::endl;
+                std::cout << "File Progress " << getFileProgress() << std::endl;
+                lastBusyTime_ = now;
+            }
+        }
+    }
 
-                if(line.empty()) {
-                    gotLine = false;
-                    continue;  // Skip Empty Lines
-                }
-    
-                // Check for "OpenFile" command
-                if (line.find("OpenFile ") == 0) {
-                    handleOpenFile(line);
-                    return false;
+public:
+    InputSourceManager(const Args& args) : args_(args) {
+        if (args.interactiveMode) {
+            std::cerr << "Starting in interactive mode" << std::endl;
+            configureStdin();
+        }
+        if (!args.interactiveMode && !args.inputSource.empty()) {
+            std::cerr << "Starting with file: " << args.inputSource << std::endl;
+            fileStream_ = openFile(args.inputSource);
+            if (!fileStream_) {
+                throw std::runtime_error("File opening failed");
+            }
+            if (args.sendBusy) {
+                lastBusyTime_ = std::chrono::steady_clock::now();
+            }
+        }
+    }
+
+    explicit operator bool() const {
+        return args_.interactiveMode || fileStream_;
+    }
+
+    bool getNextLine(std::string& line) {
+        bool gotLine = false;
+        while (!gotLine) {
+            if (args_.interactiveMode) {
+                gotLine = tryReadStdin(line);
+                if (gotLine && !args_.verbose) {
+                    std::cout << "ok" << std::endl;
                 }
             }
-            return true;  // Got a valid line
+            if (fileStream_ && !gotLine) {
+                gotLine = readFile(line);
+            }
+            if (!gotLine) {
+                return false;
+            }
+            stripComments(line);
+            if (line.empty()) {
+                gotLine = false;
+                continue;
+            }
+            if (line.find("OpenFile ") == 0) {
+                handleOpenFile(line);
+                return false;
+            }
         }
-    };
+        return true;
+    }
+};
     
 class CommandQueue {
     std::array<std::string, 100> buffer;  // Fixed-size ring buffer with 100 slots
