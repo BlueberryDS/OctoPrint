@@ -243,10 +243,6 @@ private:
     // Open a file using C-style functions and return a FilePtr
     FilePtr openFile(const std::string& filename) {
         FILE* fp = fopen(filename.c_str(), "r");
-        int flags = fcntl(fileno(fp), F_GETFL, 0);
-        if (flags & O_NONBLOCK) {
-            std::cerr << "File is in non-blocking mode!" << std::endl;
-        }
 
         if (!fp) {
             std::cerr << "Failed to open file: " << filename << std::endl;
@@ -260,22 +256,7 @@ private:
             return FilePtr(nullptr, std::fclose);;
         }
 
-        if (fseek(fp, 0, SEEK_END) != 0) {
-            std::cerr << "Failed to seek to end of file: " << filename << std::endl;
-            fclose(fp);
-            return FilePtr(nullptr, std::fclose);
-        }
         totalFileSize_ = ftell(fp);
-        if (totalFileSize_ == -1) {
-            std::cerr << "Failed to get file size: " << filename << std::endl;
-            fclose(fp);
-            return FilePtr(nullptr, std::fclose);
-        }
-        if (fseek(fp, 0, SEEK_SET) != 0) {
-            std::cerr << "Failed to seek to start of file: " << filename << std::endl;
-            fclose(fp);
-            return FilePtr(nullptr, std::fclose);
-        }
 
         return FilePtr(fp, std::fclose);
     }
@@ -304,7 +285,6 @@ private:
         }
         line.resize(line.capacity());
         while (fgets(&line[0], line.size(), fileStream_.get())) {
-            std::cout << "Read from file: " << line << std::endl;
             size_t len = strlen(line.c_str());
             if (len > 0 && line[len - 1] == '\n') {
                 --len; // Remove newline
@@ -313,7 +293,6 @@ private:
             if (!line.empty()) {
                 return true;
             }
-            line.clear(); // Ignore empty lines
         }
 
         if (feof(fileStream_.get())) {
