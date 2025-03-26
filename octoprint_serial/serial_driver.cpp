@@ -242,10 +242,23 @@ private:
     // Open a file using C-style functions and return a FilePtr
     FilePtr openFile(const std::string& filename) {
         FILE* fp = fopen(filename.c_str(), "r");
+        int flags = fcntl(fileno(fp), F_GETFL, 0);
+        if (flags & O_NONBLOCK) {
+            std::cerr << "File is in non-blocking mode!" << std::endl;
+        }
+
         if (!fp) {
             std::cerr << "Failed to open file: " << filename << std::endl;
             return FilePtr(nullptr, std::fclose);
         }
+
+        int fd = fileno(fp);
+        if (flock(fd, LOCK_SH) != 0) {  // Shared lock for reading
+            std::cerr << "Failed to lock file: " << filename << std::endl;
+            fclose(fp);
+            return FilePtr(nullptr, std::fclose);;
+        }
+
         fseek(fp, 0, SEEK_END);
         totalFileSize_ = ftell(fp);
         fseek(fp, 0, SEEK_SET);
@@ -289,7 +302,7 @@ private:
         std::cerr << "End of file reached" << strerror(errno) << std::endl;
         
         fileStream_.reset(); // Clear stream on EOF or error
-        return !line.empty();
+        return false;
     }
     
 
