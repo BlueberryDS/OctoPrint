@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <sstream>
 #include <sys/ioctl.h>
+#include <sys/file.h>
 #include <errno.h>
 #include <regex>
 #include <cstring>
