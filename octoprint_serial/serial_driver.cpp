@@ -260,9 +260,23 @@ private:
             return FilePtr(nullptr, std::fclose);;
         }
 
-        fseek(fp, 0, SEEK_END);
+        if (fseek(fp, 0, SEEK_END) != 0) {
+            std::cerr << "Failed to seek to end of file: " << filename << std::endl;
+            fclose(fp);
+            return FilePtr(nullptr, std::fclose);
+        }
         totalFileSize_ = ftell(fp);
-        fseek(fp, 0, SEEK_SET);
+        if (totalFileSize_ == -1) {
+            std::cerr << "Failed to get file size: " << filename << std::endl;
+            fclose(fp);
+            return FilePtr(nullptr, std::fclose);
+        }
+        if (fseek(fp, 0, SEEK_SET) != 0) {
+            std::cerr << "Failed to seek to start of file: " << filename << std::endl;
+            fclose(fp);
+            return FilePtr(nullptr, std::fclose);
+        }
+
         return FilePtr(fp, std::fclose);
     }
 
@@ -300,7 +314,12 @@ private:
             }
             line.clear(); // Ignore empty lines
         }
-        std::cerr << "End of file reached" << strerror(errno) << std::endl;
+        
+        if (feof(fileStream_.get())) {
+            std::cerr << "End of file reached" << std::endl;
+        } else {
+            std::cerr << "File read error: " << strerror(errno) << std::endl;
+        }
         
         fileStream_.reset(); // Clear stream on EOF or error
         return false;
