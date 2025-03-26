@@ -304,6 +304,7 @@ private:
         }
         line.resize(line.capacity());
         while (fgets(&line[0], line.size(), fileStream_.get())) {
+            std::cout << "Read from file: " << line << std::endl;
             size_t len = strlen(line.c_str());
             if (len > 0 && line[len - 1] == '\n') {
                 --len; // Remove newline
