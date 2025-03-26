@@ -1,5 +1,5 @@
 #include <iostream>
-#include <fstream>
+#include <stdio.h>
 #include <string>
 #include <deque>
 #include <fcntl.h>
@@ -314,7 +314,7 @@ private:
             }
             line.clear(); // Ignore empty lines
         }
-        
+
         if (feof(fileStream_.get())) {
             std::cerr << "End of file reached" << std::endl;
         } else {
