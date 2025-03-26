@@ -252,10 +252,9 @@ private:
         return FilePtr(fp, std::fclose);
     }
 
-    // Read a line from stdin (unchanged)
     bool tryReadStdin(std::string& line) {
-        char buffer[256];
-        ssize_t n = read(STDIN_FILENO, buffer, sizeof(buffer) - 1);
+        line.resize(line.capacity());
+        ssize_t n = read(STDIN_FILENO, &line[0], line.size() - 1);
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 return false;
@@ -265,37 +264,32 @@ private:
         }
         if (n == 0) return false;
         
-        buffer[n] = '\0';
-        line = std::string(buffer);
-        if (!line.empty() && line.back() == '\n') line.pop_back();
+        if (line[n - 1] == '\n') --n; // Remove newline if present
+        line.resize(n);
         return !line.empty();
     }
-
-    // Read a line from the file using C-style functions
+    
     bool readFile(std::string& line) {
         sendBusyMessageIfNeeded();
         if (!fileStream_) {
             return false;
         }
-        line.clear();
-        char buffer[1024];
-        while (fgets(buffer, sizeof(buffer), fileStream_.get()) != nullptr) {
-            line += buffer;
-            if (!line.empty() && line.back() == '\n') {
-                line.pop_back();
-                if (!line.empty()) {
-                    return true;
-                }
-                line.clear();
+        line.resize(line.capacity());
+        while (fgets(&line[0], line.size(), fileStream_.get())) {
+            size_t len = strlen(line.c_str());
+            if (len > 0 && line[len - 1] == '\n') {
+                --len; // Remove newline
             }
-        }
-        // Handle EOF or error
-        if (!line.empty()) { // Last line without newline
-            return true;
+            line.resize(len);
+            if (!line.empty()) {
+                return true;
+            }
+            line.clear(); // Ignore empty lines
         }
         fileStream_.reset(); // Clear stream on EOF or error
-        return false;
+        return !line.empty();
     }
+    
 
     // Handle "OpenFile" command
     void handleOpenFile(const std::string& line) {
@@ -416,15 +410,14 @@ public:
         return rewindRequested;
     }
 
-    // **nextLineNumber**: Returns the line number for the next command to be processed
+    // **nextLineNumber**: Returns the line number for the next command to be added
     size_t nextLineNumber() {
-        return cursorLineNumber + 1;
+        return size - cursor + cursorLineNumber;
     }
 
     // **next**: Returns a reference to the next available string for writing a command
     std::string& next() {
         size_t writeIndex = (start + size) % 100;
-        buffer[writeIndex].clear();  // Clear the string, keeping its capacity
         return buffer[writeIndex];
     }
 
@@ -532,11 +525,12 @@ public:
     }
 
     std::string& next() {
+        auto& line = commandQueue.next();
         auto lineNumber = commandQueue.nextLineNumber();
         if (lineNumber == 0) {
             std::cerr << "Warning: Line number is 0, resetting to 0" << std::endl;
-            commandQueue.next() = M110;
-            addChecksum(commandQueue.next(), lineNumber); // Reset line number
+            line = M110;
+            addChecksum(line, lineNumber); // Reset line number
             commandQueue.commit();
         }
 
