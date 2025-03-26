@@ -12,7 +12,7 @@
 #include <cstring>
 #include <thread>
 #include <chrono>
-
+#include <array>
 // Structure to hold parsed arguments
 struct Args {
     std::string serialPortName;
@@ -152,25 +152,25 @@ private:
 };
 class InputSourceManager {
     private:
-        std::string stripComments(const std::string& line) {
+        void stripComments(std::string& line) {
             std::string result;
             bool inParentheses = false;
             
             for (size_t i = 0; i < line.length(); ++i) {
-                if (line[i] == '(') {
-                    inParentheses = true;
-                    continue;
-                }
-                if (line[i] == ')') {
-                    inParentheses = false;
-                    continue;
-                }
-                if (line[i] == ';' && !inParentheses) {
-                    break;  // Stop at semicolon if not in parentheses
-                }
-                if (!inParentheses) {
-                    result += line[i];
-                }
+            if (line[i] == '(') {
+                inParentheses = true;
+                continue;
+            }
+            if (line[i] == ')') {
+                inParentheses = false;
+                continue;
+            }
+            if (line[i] == ';' && !inParentheses) {
+                break;  // Stop at semicolon if not in parentheses
+            }
+            if (!inParentheses) {
+                result += line[i];
+            }
             }
             
             // Remove leading and trailing whitespace
@@ -178,10 +178,11 @@ class InputSourceManager {
             size_t end = result.find_last_not_of(" \t");
             
             if (start == std::string::npos) {
-                return "";  // Empty line after stripping
+            line.clear();  // Empty line after stripping
+            return;
             }
             
-            return result.substr(start, end - start + 1);
+            line = result.substr(start, end - start + 1);
         }
 
         // Configuration for stdin
@@ -336,7 +337,7 @@ class InputSourceManager {
                     return false;  // No line available
                 }
 
-                line = stripComments(line);
+                stripComments(line);
 
                 if(line.empty()) {
                     gotLine = false;
@@ -352,6 +353,101 @@ class InputSourceManager {
             return true;  // Got a valid line
         }
     };
+    
+class CommandQueue {
+    std::array<std::string, 100> buffer;  // Fixed-size ring buffer with 100 slots
+    size_t start = 0;                     // Index of the oldest command
+    size_t size = 0;                      // Number of commands currently in the queue
+    size_t cursor = 0;                    // Logical index of the next command to process
+    size_t cursorLineNumber = 0;          // Line number of the last processed command
+
+public:
+    // **Constructor**: Initializes the buffer and preallocates string capacities
+    CommandQueue() {
+        for (auto& str : buffer) {
+            str.reserve(128);  // Reserve 128 characters per string to avoid reallocations
+        }
+    }
+
+    // **moveToLine**: Moves the cursor to a specific line number
+    size_t moveToLine(size_t requestedLine) {
+        if (requestedLine > cursorLineNumber) {
+            std::cerr << "Error: Requested line " << requestedLine 
+                        << " is ahead of current line " << cursorLineNumber << std::endl;
+            throw std::runtime_error("Retry cannot be performed, all is lost.");
+        }
+
+        size_t rewindRequested = cursorLineNumber - requestedLine;
+        if (rewindRequested > cursor) {
+            std::cerr << "Error: Requested line " << requestedLine << " is out of range." << std::endl;
+            throw std::runtime_error("Retry cannot be performed, all is lost.");
+        }
+
+        cursor -= rewindRequested;
+        cursorLineNumber = requestedLine;
+        return rewindRequested;
+    }
+
+    // **nextLineNumber**: Returns the line number for the next command to be processed
+    size_t nextLineNumber() {
+        return cursorLineNumber + 1;
+    }
+
+    // **next**: Returns a reference to the next available string for writing a command
+    std::string& next() {
+        size_t writeIndex = (start + size) % 100;
+        buffer[writeIndex].clear();  // Clear the string, keeping its capacity
+        return buffer[writeIndex];
+    }
+
+    // **commit**: Commits the new command to the queue
+    void commit() {
+        if (size < 100) {
+            size++;  // Add new command if buffer is not full
+        } else {
+            // Buffer is full: overwrite the oldest command
+            start = (start + 1) % 100;  // Move start to the next position
+            if (cursor > 0) {
+                cursor--;  // Adjust cursor to maintain logical position
+            } else {
+                std::cerr << "Command Sending is Hung!" << std::endl;
+                throw std::runtime_error("Queue has overrun max size");
+            }
+        }
+    }
+
+    // **operator bool**: Checks if there are more commands to process
+    operator bool() const {
+        return cursor < size;
+    }
+
+    // **currentLineNumber**: Returns the current line number
+    size_t currentLineNumber() const {
+        return cursorLineNumber;
+    }
+
+    // **peekCursor**: Returns a const reference to the next command without advancing
+    const std::string& peekCursor() const {
+        if (cursor < size) {
+            size_t physicalIndex = (start + cursor) % 100;
+            return buffer[physicalIndex];
+        } else {
+            throw std::out_of_range("Cursor out of range in peekCursor");
+        }
+    }
+
+    // **getCursor**: Returns the next command and advances the cursor
+    std::string& getCursor() {
+        if (cursor < size) {
+            size_t physicalIndex = (start + cursor) % 100;
+            cursor++;           // Advance cursor to the next command
+            cursorLineNumber++; // Increment line number after processing
+            return buffer[physicalIndex];
+        } else {
+            throw std::out_of_range("Cursor out of range in getCursor");
+        }
+    }
+};
 
 class LineQueue {
 private:
@@ -359,46 +455,37 @@ private:
     size_t serialBufferSize = 128;
     size_t bytesSentSinceLastOK = 0;
     int asciiBufferSize = 4;
-    std::deque<std::string> commandQueue;
-    const size_t maxQueueSize = 100;
-    size_t cursorLineNumber = 0;
-    size_t cursor = 0;
+    CommandQueue commandQueue;
     size_t lineAcknowledged = 0;
     int maxStepper = 0;
     const char* M110 = "M110"; // with checksum
     size_t resendsToIgnore = 0;
     size_t lastRequestedResendLine = 0;
+    size_t bufferStarvationCounter = 0;
 
-    std::string addChecksum(const std::string& command, size_t lineNumber) {
-        std::ostringstream formattedCommand;
-    
-        formattedCommand << "N" << lineNumber << " "<< command;
-        
+    void addChecksum(std::string& command, size_t lineNumber) {
+        std::string lineNumberStr = "N" + std::to_string(lineNumber) + " ";
+        command.insert(0, lineNumberStr);
+
         int checksum = 0;
-        for (char c : formattedCommand.str()) {
+        for (char c : command) {
             checksum ^= c;
         }
-    
-        formattedCommand << "*" << checksum << "\n";
-    
-        auto res = formattedCommand.str();
 
-        if (res.size() > maxLineLength) {
+        command.push_back('*');
+        command.append(std::to_string(checksum));
+        command.push_back('\n');
+
+        if (command.size() > maxLineLength) {
             std::cerr << "Error: " << command << " is too long" << std::endl;
-            return addChecksum("M118 Too Long", lineNumber); // kill any lines longer than max length
+            command = "M118 Too Long"; // kill any lines longer than max length
+            addChecksum(command, lineNumber);
         }
-
-        return res;
     }
 public:
     LineQueue (const Args& args) : serialBufferSize(args.serialBufferSize) {}
 
     void moveToLine(size_t requestedLine) {
-        if (requestedLine > cursorLineNumber) {
-            std::cerr << "Error: Requested line " << requestedLine << " is ahead of current line " << cursorLineNumber << std::endl;
-            throw std::runtime_error("Retry cannot be performed, all is lost.");
-        }
-
         if (resendsToIgnore && requestedLine == lastRequestedResendLine) {
             resendsToIgnore--; // Since we pack the buffer, the firmware will send multiple resends
             return;
@@ -406,60 +493,42 @@ public:
             std::cerr << "Error: Resend " << requestedLine << " requested which less than previous resend" << std::endl;
             throw std::runtime_error("Retry cannot be performed, all is lost.");
         } // If a resend is issued for a further line, assume we've passed the previous retry
-
         
-        auto rewindRequested = (cursorLineNumber - requestedLine);
-        auto requestedCursor = cursor - rewindRequested;
-        if (requestedCursor >= 0) {
-            std::cerr << "Resending from line " << requestedLine << " rewinding from " << cursorLineNumber << std::endl;
-            cursor = requestedCursor;
-            cursorLineNumber = requestedLine;
-
-            // Store Resend related information
-            resendsToIgnore = rewindRequested; // This is the number of lines we've packed into the buffer
-            lastRequestedResendLine = requestedLine;
-        } else {
-            std::cerr << "Error: Requested line " << requestedLine << " is out of range." << std::endl;
-            throw std::runtime_error("Retry cannot be performed, all is lost.");
-        }
+        resendsToIgnore = commandQueue.moveToLine(requestedLine);
+        lastRequestedResendLine = requestedLine;
     }
 
-    void add(std::string command) {
-        auto lineNumber = commandQueue.size() - cursor + cursorLineNumber;
+    void commit() {
+        addChecksum(commandQueue.next(), commandQueue.nextLineNumber());
+        commandQueue.commit();
+    }
+
+    std::string& next() {
+        auto lineNumber = commandQueue.nextLineNumber();
         if (lineNumber == 0) {
             std::cerr << "Warning: Line number is 0, resetting to 0" << std::endl;
-            commandQueue.push_back(addChecksum(M110, lineNumber)); // Reset line number
-            lineNumber++; // Next line number would be N1 
+            commandQueue.next() = M110;
+            addChecksum(commandQueue.next(), lineNumber); // Reset line number
+            commandQueue.commit();
         }
 
-        commandQueue.push_back(addChecksum(
-            command,
-            lineNumber)); // Calculate line number at end of queue
-
-        if (commandQueue.size() > maxQueueSize) {
-            commandQueue.pop_front();
-            cursor--;
-            if (cursor < 0){
-                std::cerr << "Command Sending is Hung!" << std::endl;
-                throw std::runtime_error("Queue has overrun max size");
-            }
-        }
+        return commandQueue.next();
     }
 
     explicit operator bool() const {
-        return cursor < commandQueue.size();
+        return commandQueue;
     }
 
     bool canSendCommands() const {
         // Both the queue and the serial buffer need to have space
         return *this
                 // reserve a portion of the ascii buffer for injected commands
-                && (cursorLineNumber - lineAcknowledged < asciiBufferSize * 0.75) 
+                && (commandQueue.currentLineNumber() - lineAcknowledged < asciiBufferSize * 0.75) 
                  // make sure we aren't overrunning the buffer
-                && (serialBufferSize - bytesSentSinceLastOK > commandQueue[cursor].size())
+                && (serialBufferSize - bytesSentSinceLastOK > commandQueue.peekCursor().size())
                 // If we are currently in resend status, give it a chance to catch up.
                 // We do this because buffer size is unknowable while in resend status.
-                && (!lastRequestedResendLine || cursorLineNumber - lineAcknowledged <= 1); 
+                && (!lastRequestedResendLine || commandQueue.currentLineNumber() - lineAcknowledged <= 1); 
     }
 
     void acknowledge(size_t lineNo, int stepperBuffer, int asciiBuffer) {
@@ -475,13 +544,14 @@ public:
             std::cerr << "Setting stepper buffer size to " << stepperBuffer << std::endl;
             maxStepper = stepperBuffer;
         }
-        
-        if (stepperBuffer > maxStepper * 0.9) {
-            std::cerr << "Warning: Stepper buffer is almost empty" << std::endl;
-        }
-        if (asciiBuffer > asciiBufferSize * 0.9) {
-            std::cerr << "Warning: Stepper buffer is almost empty" << std::endl;
-        }
+        if (bufferStarvationCounter++ % 10 == 0) {
+            if (asciiBuffer > asciiBufferSize * 0.9) {
+                std::cerr << "Warning: Ascii buffer is almost empty" << std::endl;
+            }
+            else if (stepperBuffer > maxStepper * 0.9) {
+                std::cerr << "Warning: Stepper buffer is almost empty" << std::endl;
+            }
+        }        
         
         // Dynamically detect the size of the ascii buffer
         if (asciiBufferSize < asciiBuffer) {
@@ -491,63 +561,63 @@ public:
     }
     
     const std::string& get() {
-        if (*this) {
-            cursorLineNumber++;
-            auto& ret = commandQueue[cursor++];
+        auto & ret = commandQueue.getCursor();
 
-            bytesSentSinceLastOK += ret.size();
+        bytesSentSinceLastOK += ret.size();
 
-            return ret;
-        }
-
-        throw std::runtime_error("Invalid Access to queue");
+        return ret;
     }
 };
 
+int extractNumberAfterPrefix(const std::string& str, const std::string& prefix) {
+    size_t pos = str.find(prefix);
+    if (pos != std::string::npos) {
+        pos += prefix.length();
+        while (pos < str.size() && std::isspace(str[pos])) ++pos;
+        size_t end = pos;
+        while (end < str.size() && std::isdigit(str[end])) ++end;
+        return std::stoi(str.substr(pos, end - pos));
+    }
+    return -1;
+}
+
 void readSerialResponse(SerialPort& serialPort, LineQueue & queue,bool blocking, const Args& args) {
-    char buffer[256];
+    static char buffer[256];
+    static std::string response;
+    response.assign(buffer);
+
     int n = serialPort.readData(buffer, sizeof(buffer) - 1, blocking);
     if (n > 0) {
         buffer[n] = '\0';
-        std::smatch match;
-        std::regex resendRegex("Resend: (\\d+)");
 
-        std::string response(buffer);
         if (response.find("ok") != std::string::npos) {
-            std::regex okRegex("ok N(\\d+)");
-            if (std::regex_search(response, match, okRegex)) {
-                int lineNo = std::stoi(match[1].str());
-                std::regex pRegex("P(\\d+)");
-                std::regex bRegex("B(\\d+)");
-                int stepperBuffer = -1; // Signifies not sent
-                int asciiBuffer = -1;
+            int lineNo = extractNumberAfterPrefix(response, "ok N");
+            int stepperBuffer = extractNumberAfterPrefix(response, "P");
+            int asciiBuffer = extractNumberAfterPrefix(response, "B");
 
-                if (std::regex_search(response, match, pRegex)) {
-                    stepperBuffer = std::stoi(match[1].str());
-                }
-                if (std::regex_search(response, match, bRegex)) {
-                    asciiBuffer = std::stoi(match[1].str());
-                }
-
+            if (lineNo != -1) {
                 queue.acknowledge(lineNo, stepperBuffer, asciiBuffer);
-            } // Ignore extraneous OKs
+            }
 
-            if(args.verbose) {
-                std::cout << response << std::flush;
+            if (args.verbose) {
+                std::cout << response;
             }
         }
-        else if (std::regex_search(response, match, resendRegex)) {
-            size_t requestedLine = std::stoi(match[1].str());
-            queue.moveToLine(requestedLine);
-            if(args.verbose) {
-                std::cout << response << std::flush;
+        else if (response.find("Resend: ") != std::string::npos) {
+            int requestedLine = extractNumberAfterPrefix(response, "Resend: ");
+            if (requestedLine != -1) {
+                queue.moveToLine(requestedLine);
+            }
+            if (args.verbose) {
+                std::cout << response;
             }
         }
         else {
-            std::cout << response << std::flush;
+            std::cout << response;
         }
     }
 }
+
 // Function to display usage
 void printUsage(const char* programName) {
     std::cerr << "Usage: " << programName << " <serial_port> <baud_rate> <gcode_file | --interactive> [options]\n"
@@ -610,7 +680,7 @@ Args parseArguments(int argc, char* argv[]) {
                 throw std::runtime_error("Missing value for --serialbuffersize");
             }
         } else {
-            std::cerr << "Error: Unknown option '" << arg << "'\n";
+            std::cerr << "Error: Unknown option '" << arg << "'" << std::endl;
             printUsage(argv[0]);
             throw std::runtime_error("Unknown option");
         }
@@ -629,7 +699,7 @@ void processCommandQueue(SerialPort& serialPort, LineQueue& queue, const Args& a
         }
 
         if (args.verbose) {
-            std::cout << command << std::endl;
+            std::cout << command << '\n';
         }
             
         readSerialResponse(serialPort, queue, false, args);
@@ -662,16 +732,16 @@ int main(int argc, char* argv[]) {
 
     LineQueue commandQueue(args);
 
-    commandQueue.add("M115"); // Start with an initial GCode command to coordinate the line numbers
+    commandQueue.next() = "M115"; // Start with an initial GCode command to coordinate the line numbers
+    commandQueue.commit();
     processCommandQueue(serialPort, commandQueue, args);
 
 
     bool running = true;
 
     while (running) {
-        std::string line;
-        if (!commandQueue && sourceManager.getNextLine(line)) {          
-            commandQueue.add(line);
+        if (!commandQueue && sourceManager.getNextLine(commandQueue.next())) {          
+            commandQueue.commit();
         } else {
             readSerialResponse(serialPort, commandQueue, true, args); // block if we are not reading new lines
         }
