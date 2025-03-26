@@ -286,6 +286,7 @@ private:
             }
             line.clear(); // Ignore empty lines
         }
+        std::cerr << "End of file reached" << std::endl;
         fileStream_.reset(); // Clear stream on EOF or error
         return !line.empty();
     }
