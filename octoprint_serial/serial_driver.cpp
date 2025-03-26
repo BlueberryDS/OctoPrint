@@ -289,8 +289,9 @@ private:
             if (len > 0 && line[len - 1] == '\n') {
                 --len; // Remove newline
             }
-            line.resize(len);
-            if (!line.empty()) {
+
+            if (len != 0) {
+                line.resize(len);
                 return true;
             }
         }
