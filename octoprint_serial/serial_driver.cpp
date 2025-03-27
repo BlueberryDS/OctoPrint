@@ -290,7 +290,7 @@ private:
                 continue; // Not a full line yet
             }
             
-            line.resize(len);
+            line.resize(len-1); // Remove newline
             return readFullLine;
         }
 
