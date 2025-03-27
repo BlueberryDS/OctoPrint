@@ -368,7 +368,7 @@ public:
             if (fileStream_ && !gotLine) {
                 gotLine = readFile(line);
             }
-            
+
             if (!gotLine) {
                 return false;
             }
@@ -519,6 +519,9 @@ public:
     LineQueue (const Args& args) : serialBufferSize(args.serialBufferSize) {}
 
     void moveToLine(size_t requestedLine) {
+        std::cerr << "Retry requested for line " << requestedLine 
+              << ". Currently on line " << commandQueue.currentLineNumber() << std::endl;
+              
         if (resendsToIgnore && requestedLine == lastRequestedResendLine) {
             resendsToIgnore--; // Since we pack the buffer, the firmware will send multiple resends
             return;
