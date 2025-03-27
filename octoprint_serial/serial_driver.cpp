@@ -509,7 +509,6 @@ private:
     const char* M110 = "M110"; // with checksum
     size_t resendsToIgnore = 0;
     size_t lastRequestedResendLine = 0;
-    size_t bufferStarvationCounter = 0;
 
     void addChecksum(std::string& command, size_t lineNumber) {
         std::string lineNumberStr = "N" + std::to_string(lineNumber) + " ";
@@ -598,12 +597,14 @@ public:
         }
         
         if (asciiBuffer > asciiBufferSize * 0.9) {
-            if (bufferStarvationCounter++ % 10 == 0) {
+            static char bufferCounter = 0;
+            if (bufferCounter++ % 10 == 0) {
                 std::cerr << "Warning: Ascii buffer is almost empty" << std::endl;
             }
         }
         if (stepperBuffer > maxStepper * 0.9) {
-            if (bufferStarvationCounter++ % 10 == 0) {
+            static char bufferCounter = 0;
+            if (bufferCounter++ % 10 == 0) {
                 std::cerr << "Warning: Stepper buffer is almost empty" << std::endl;
             }
         }
