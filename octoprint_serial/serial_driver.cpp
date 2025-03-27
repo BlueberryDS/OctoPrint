@@ -24,6 +24,7 @@ struct Args {
     bool verbose = false;
     bool sendBusy = false;
     int serialBufferSize = 128;
+    size_t closePosition = 0;
 };
 
 /*
@@ -356,6 +357,16 @@ public:
         }
     }
 
+    ~InputSourceManager() {
+        if (fileStream_) {
+            if (fileStream_) {
+                auto currentPos = ftell(fileStream_.get());
+                std::cerr << "Closing file stream at position: " << currentPos << std::endl;
+            }
+            fileStream_.reset(); // Close file stream
+        }
+    }
+
     explicit operator bool() const {
         return args_.interactiveMode || fileStream_;
     }
@@ -663,7 +674,6 @@ void readSerialResponse(SerialPort& serialPort, LineQueue & queue,bool blocking,
         }
     }
 }
-
 // Function to display usage
 void printUsage(const char* programName) {
     std::cerr << "Usage: " << programName << " <serial_port> <baud_rate> <gcode_file | --interactive> [options]\n"
@@ -674,7 +684,8 @@ void printUsage(const char* programName) {
               << "Options:\n"
               << "  --verbose            Enable verbose logging\n"
               << "  --sendbusy           Enable Fake Busy signals when file processing\n"
-              << "  --serialbuffersize   Set the serial buffer size (default: 128)\n";
+              << "  --serialbuffersize   Set the serial buffer size (default: 128)\n"
+              << "  --closeposition      Set the close position (default: 0)\n";
 }
 
 // Function to parse arguments with stubs
@@ -724,6 +735,20 @@ Args parseArguments(int argc, char* argv[]) {
                 std::cerr << "Error: --serialbuffersize requires a value\n";
                 printUsage(argv[0]);
                 throw std::runtime_error("Missing value for --serialbuffersize");
+            }
+        } else if (arg == "--closeposition") {
+            if (i + 1 < argc) {
+                try {
+                    args.closePosition = std::stoul(argv[++i]);
+                } catch (const std::exception& e) {
+                    std::cerr << "Error: Invalid close position '" << argv[i] << "': " << e.what() << std::endl;
+                    printUsage(argv[0]);
+                    throw;
+                }
+            } else {
+                std::cerr << "Error: --closeposition requires a value\n";
+                printUsage(argv[0]);
+                throw std::runtime_error("Missing value for --closeposition");
             }
         } else {
             std::cerr << "Error: Unknown option '" << arg << "'" << std::endl;
