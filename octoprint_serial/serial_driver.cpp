@@ -249,7 +249,9 @@ private:
             return FilePtr(nullptr, std::fclose);;
         }
 
-        totalFileSize_ = ftell(fp);
+        fseek(fp, 0, SEEK_END); // Move to the end of the file
+        totalFileSize_ = ftell(fp); // Get the file size
+        fseek(fp, 0, SEEK_SET); // Reset to the beginning of the file
 
         return FilePtr(fp, std::fclose);
     }
@@ -276,17 +278,19 @@ private:
         if (!fileStream_) {
             return false;
         }
-        line.resize(line.capacity());
-        auto ptr = fgets(&line[0], line.size(), fileStream_.get());
-        if (ptr) {
-            size_t len = strlen(ptr);
-            if (len > 0 && line[len - 1] == '\n') {
-                --len; // Remove newline
-            }
 
+        bool readFullLine = true;
+
+        line.resize(line.capacity());
+        while (auto ptr = fgets(&line[0], line.size(), fileStream_.get())) {
+            size_t len = strlen(ptr);
+            if (len > 0 && line[len - 1] != '\n') {
+                readFullLine = false;
+                continue; // Not a full line yet
+            }
             
             line.resize(len);
-            return true;
+            return readFullLine;
         }
 
         if (feof(fileStream_.get())) {
@@ -389,7 +393,7 @@ public:
 };
     
 class CommandQueue {
-    std::array<std::string, 100> buffer;  // Fixed-size ring buffer with 100 slots
+    std::array<std::string, 300> buffer;  // Fixed-size ring buffer with 100 slots
     size_t start = 0;                     // Index of the oldest command
     size_t size = 0;                      // Number of commands currently in the queue
     size_t cursor = 0;                    // Logical index of the next command to process
@@ -521,7 +525,7 @@ public:
     void moveToLine(size_t requestedLine) {
         std::cerr << "Retry requested for line " << requestedLine 
               << ". Currently on line " << commandQueue.currentLineNumber() << std::endl;
-              
+
         if (resendsToIgnore && requestedLine == lastRequestedResendLine) {
             resendsToIgnore--; // Since we pack the buffer, the firmware will send multiple resends
             return;
@@ -581,14 +585,17 @@ public:
             std::cerr << "Setting stepper buffer size to " << stepperBuffer << std::endl;
             maxStepper = stepperBuffer;
         }
-        if (bufferStarvationCounter++ % 10 == 0) {
-            if (asciiBuffer > asciiBufferSize * 0.9) {
+        
+        if (asciiBuffer > asciiBufferSize * 0.9) {
+            if (bufferStarvationCounter++ % 10 == 0) {
                 std::cerr << "Warning: Ascii buffer is almost empty" << std::endl;
             }
-            else if (stepperBuffer > maxStepper * 0.9) {
+        }
+        if (stepperBuffer > maxStepper * 0.9) {
+            if (bufferStarvationCounter++ % 10 == 0) {
                 std::cerr << "Warning: Stepper buffer is almost empty" << std::endl;
             }
-        }        
+        }
         
         // Dynamically detect the size of the ascii buffer
         if (asciiBufferSize < asciiBuffer) {
