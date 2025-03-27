@@ -14,6 +14,7 @@
 #include <thread>
 #include <chrono>
 #include <array>
+#include <algorithm>
 // Structure to hold parsed arguments
 struct Args {
     std::string serialPortName;
@@ -207,18 +208,10 @@ private:
             line.clear();
             return;
         }
-    
-        // Remove leading whitespace
-        if (start > 0) {
-            line.erase(0, start);
-            writePos -= start;
-            end -= start;
-        }
-    
+
         // Remove trailing whitespace
-        if (end < writePos - 1) {
-            line.erase(end + 1);
-        }
+        line.erase(end < writePos - 1 ? end + 1 : writePos);
+        line.erase(0, start);
     }
 
     // Configure stdin for non-blocking, line-based input (unchanged)
@@ -284,16 +277,16 @@ private:
             return false;
         }
         line.resize(line.capacity());
-        while (fgets(&line[0], line.size(), fileStream_.get())) {
-            size_t len = strlen(line.c_str());
+        auto ptr = fgets(&line[0], line.size(), fileStream_.get());
+        if (ptr) {
+            size_t len = strlen(ptr);
             if (len > 0 && line[len - 1] == '\n') {
                 --len; // Remove newline
             }
 
-            if (len != 0) {
-                line.resize(len);
-                return true;
-            }
+            
+            line.resize(len);
+            return true;
         }
 
         if (feof(fileStream_.get())) {
@@ -375,14 +368,17 @@ public:
             if (fileStream_ && !gotLine) {
                 gotLine = readFile(line);
             }
+            
             if (!gotLine) {
                 return false;
             }
+
             stripComments(line);
             if (line.empty()) {
                 gotLine = false;
                 continue;
             }
+
             if (line.find("OpenFile ") == 0) {
                 handleOpenFile(line);
                 return false;
@@ -571,11 +567,11 @@ public:
 
     void acknowledge(size_t lineNo, int stepperBuffer, int asciiBuffer) {
         lineAcknowledged=lineNo;
-        bytesSentSinceLastOK = 0;
 
         if (lineNo >= lastRequestedResendLine) { // If we've successfully processed the resend, then we can reset the resend counter
             lastRequestedResendLine = 0;
             resendsToIgnore = 0;
+            bytesSentSinceLastOK = 0;
         }
 
         if (stepperBuffer > maxStepper) {
@@ -614,7 +610,9 @@ int extractNumberAfterPrefix(const std::string& str, const std::string& prefix) 
         while (pos < str.size() && std::isspace(str[pos])) ++pos;
         size_t end = pos;
         while (end < str.size() && std::isdigit(str[end])) ++end;
-        return std::stoi(str.substr(pos, end - pos));
+        if (end - pos > 0) {
+            return std::stoi(str.substr(pos, end - pos));
+        }
     }
     return -1;
 }
