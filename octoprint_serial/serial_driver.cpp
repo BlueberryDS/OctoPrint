@@ -254,6 +254,15 @@ private:
         totalFileSize_ = ftell(fp); // Get the file size
         fseek(fp, 0, SEEK_SET); // Reset to the beginning of the file
 
+        if (args_.closePosition > 0) {
+            fseek(fp, args_.closePosition, SEEK_SET); // Move to the specified position
+            if (ftell(fp) != args_.closePosition) {
+                std::cerr << "Failed to seek to close position: " << args_.closePosition << std::endl;
+                fclose(fp);
+                return FilePtr(nullptr, std::fclose);
+            }
+        }
+
         return FilePtr(fp, std::fclose);
     }
 
