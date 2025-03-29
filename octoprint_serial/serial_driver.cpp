@@ -410,6 +410,14 @@ public:
         }
         return true;
     }
+
+    void closeFile() {
+        if (fileStream_) {
+            auto currentPos = ftell(fileStream_.get());
+            std::cerr << "Closing file stream at position: " << currentPos << std::endl;
+            fileStream_.reset(); // Close file stream
+        }
+    }
 };
     
 class CommandQueue {
@@ -653,7 +661,7 @@ int extractNumberAfterPrefix(const std::string& str, const std::string& prefix) 
     return -1;
 }
 
-void readSerialResponse(SerialPort& serialPort, LineQueue & queue,bool blocking, const Args& args) {
+void readSerialResponse(SerialPort& serialPort, LineQueue & queue, InputSourceManager & inputManager, bool blocking, const Args& args) {
     static char buffer[256];
     static std::string response;
     response.assign(buffer);
@@ -683,6 +691,11 @@ void readSerialResponse(SerialPort& serialPort, LineQueue & queue,bool blocking,
             if (args.verbose) {
             std::cout << response;
             }
+        }
+        else if (response.find("//action:cancel", 0) == 0) { // Check if "//action:cancel" is at the start of the line
+            std::cerr << "Cancel action received. Terminating process." << std::endl;
+            inputManager.closeFile();
+            std::cout << response;
         }
         else {
             std::cout << response;
@@ -775,7 +788,7 @@ Args parseArguments(int argc, char* argv[]) {
     return args;
 }
 
-void processCommandQueue(SerialPort& serialPort, LineQueue& queue, const Args& args) {
+void processCommandQueue(SerialPort& serialPort, LineQueue& queue, InputSourceManager& inputSourceManager ,const Args& args) {
     while (queue.canSendCommands()) {
         const std::string& command = queue.get();
         ssize_t bytes_written = serialPort.writeData(command);
@@ -788,7 +801,7 @@ void processCommandQueue(SerialPort& serialPort, LineQueue& queue, const Args& a
             std::cout << command << '\n';
         }
             
-        readSerialResponse(serialPort, queue, false, args);
+        readSerialResponse(serialPort, queue, inputSourceManager, false, args);
     }
 }
 
@@ -820,7 +833,7 @@ int main(int argc, char* argv[]) {
 
     commandQueue.next() = "M115"; // Start with an initial GCode command to coordinate the line numbers
     commandQueue.commit();
-    processCommandQueue(serialPort, commandQueue, args);
+    processCommandQueue(serialPort, commandQueue, sourceManager, args);
 
 
     bool running = true;
@@ -829,10 +842,10 @@ int main(int argc, char* argv[]) {
         if (!commandQueue && sourceManager.getNextLine(commandQueue.next())) {          
             commandQueue.commit();
         } else {
-            readSerialResponse(serialPort, commandQueue, true, args); // block if we are not reading new lines
+            readSerialResponse(serialPort, commandQueue, sourceManager, true, args); // block if we are not reading new lines
         }
         
-        processCommandQueue(serialPort, commandQueue, args);
+        processCommandQueue(serialPort, commandQueue, sourceManager, args);
     }
 
     return 0;
