@@ -585,7 +585,7 @@ public:
                 // reserve a portion of the ascii buffer for injected commands
                 && (commandQueue.currentLineNumber() - lineAcknowledged < asciiBufferSize * 0.75) 
                  // make sure we aren't overrunning the buffer
-                && (serialBufferSize - bytesSentSinceLastOK > commandQueue.peekCursor().size())
+                && (serialBufferSize * 0.75 - bytesSentSinceLastOK > commandQueue.peekCursor().size())
                 // If we are currently in resend status, give it a chance to catch up.
                 // We do this because buffer size is unknowable while in resend status.
                 && (!lastRequestedResendLine || commandQueue.currentLineNumber() - lineAcknowledged <= 1); 
