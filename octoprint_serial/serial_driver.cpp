@@ -667,26 +667,26 @@ void readSerialResponse(SerialPort& serialPort, LineQueue & queue,bool blocking,
     if (n > 0) {
         buffer[n] = '\0';
 
-        if (response.find("ok") != std::string::npos) {
+        if (response.find("ok", 0) == 0) { // Check if "ok" is at the start of the line
             int lineNo = extractNumberAfterPrefix(response, "ok N");
             int stepperBuffer = extractNumberAfterPrefix(response, "P");
             int asciiBuffer = extractNumberAfterPrefix(response, "B");
 
             if (lineNo != -1) {
-                queue.acknowledge(lineNo, stepperBuffer, asciiBuffer);
+            queue.acknowledge(lineNo, stepperBuffer, asciiBuffer);
             }
 
             if (args.verbose) {
-                std::cout << response;
+            std::cout << response;
             }
         }
-        else if (response.find("Resend: ") != std::string::npos) {
+        else if (response.find("Resend: ", 0) == 0) { // Check if "Resend: " is at the start of the line
             int requestedLine = extractNumberAfterPrefix(response, "Resend: ");
             if (requestedLine != -1) {
-                queue.moveToLine(requestedLine);
+            queue.moveToLine(requestedLine);
             }
             if (args.verbose) {
-                std::cout << response;
+            std::cout << response;
             }
         }
         else {
