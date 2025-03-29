@@ -600,20 +600,15 @@ public:
             bytesSentSinceLastOK = 0;
         }
 
-        static auto startTime = std::chrono::steady_clock::now();
-        auto elapsedTime = std::chrono::duration_cast<std::chrono::minutes>(
-            std::chrono::steady_clock::now() - startTime);
-
-        if (elapsedTime.count() < 5) {
-            static size_t triedToSetStepper = 0;
-            if (stepperBuffer > maxStepper && triedToSetStepper++ < 1000) {
+        // make sure we don't screw up our buffer settings due to some late-stage
+        // serial error
+        if (commandQueue.currentLineNumber() < 1000) {
+            if (stepperBuffer > maxStepper) {
             std::cerr << "Setting stepper buffer size to " << stepperBuffer << std::endl;
             maxStepper = stepperBuffer;
             }
 
-            // make sure we don't explode the buffer due to some serial error
-            static size_t triedToSetAscii = 0;
-            if (asciiBufferSize < asciiBuffer && triedToSetAscii++ < 1000) {
+            if (asciiBufferSize < asciiBuffer) {
             std::cerr << "Setting ascii buffer size to " << asciiBuffer << std::endl;
             asciiBufferSize = asciiBuffer;
             }
