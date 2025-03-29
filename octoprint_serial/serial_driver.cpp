@@ -600,10 +600,18 @@ public:
             bytesSentSinceLastOK = 0;
         }
 
-        if (stepperBuffer > maxStepper) {
+        static size_t triedToSetStepper = 0;
+        if (stepperBuffer > maxStepper && triedToSetStepper++ < 1000) {
             std::cerr << "Setting stepper buffer size to " << stepperBuffer << std::endl;
             maxStepper = stepperBuffer;
         }
+
+         // make sure we don't explode the buffer due to some serial error
+         static size_t triedToSetAscii= 0;
+         if (asciiBufferSize < asciiBuffer && triedToSetAscii++ < 1000) {
+             std::cerr << "Setting ascii buffer size to " << asciiBuffer << std::endl;
+             asciiBufferSize = asciiBuffer;
+         }
         
         if (asciiBuffer > asciiBufferSize * 0.9) {
             static char bufferCounter = 0;
@@ -618,14 +626,7 @@ public:
             }
         }
         
-        // make sure we don't explode the buffer due to some serial error
-        static size_t start = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-        size_t currentTime = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-
-        if (asciiBufferSize < asciiBuffer && currentTime - start < 5 * 60) {
-            std::cerr << "Setting ascii buffer size to " << asciiBuffer << std::endl;
-            asciiBufferSize = asciiBuffer;
-        }
+       
     }
     
     const std::string& get() {
