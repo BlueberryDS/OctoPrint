@@ -609,8 +609,11 @@ public:
             }
         }
         
-        // Dynamically detect the size of the ascii buffer
-        if (asciiBufferSize < asciiBuffer) {
+        // make sure we don't explode the buffer due to some serial error
+        static size_t start = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        size_t currentTime = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+
+        if (asciiBufferSize < asciiBuffer && currentTime - start < 5 * 60) {
             std::cerr << "Setting ascii buffer size to " << asciiBuffer << std::endl;
             asciiBufferSize = asciiBuffer;
         }
