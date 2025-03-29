@@ -24,7 +24,7 @@ struct Args {
     bool verbose = false;
     bool sendBusy = false;
     int serialBufferSize = 128;
-    size_t closePosition = 0;
+    long closePosition = 0;
 };
 
 /*
