@@ -655,7 +655,7 @@ int extractNumberAfterPrefix(const std::string& str, const std::string& prefix) 
         size_t end = pos;
         while (end < str.size() && std::isdigit(str[end])) ++end;
         if (end - pos > 0) {
-            return std::stoi(str.substr(pos, end - pos));
+            return std::stol(str.substr(pos, end - pos));
         }
     }
     return -1;
@@ -734,7 +734,7 @@ Args parseArguments(int argc, char* argv[]) {
     // Required arguments
     args.serialPortName = argv[1];
     try {
-        args.baudRate = std::stoi(argv[2]);
+        args.baudRate = std::stol(argv[2]);
     } catch (const std::exception& e) {
         std::cerr << "Error: Invalid baud rate '" << argv[2] << "': " << e.what() << std::endl;
         printUsage(argv[0]);
@@ -753,7 +753,7 @@ Args parseArguments(int argc, char* argv[]) {
         } else if (arg == "--serialbuffersize") {
             if (i + 1 < argc) {
                 try {
-                    args.serialBufferSize = std::stoi(argv[++i]);
+                    args.serialBufferSize = std::stol(argv[++i]);
                 } catch (const std::exception& e) {
                     std::cerr << "Error: Invalid serial buffer size '" << argv[i] << "': " << e.what() << std::endl;
                     printUsage(argv[0]);
