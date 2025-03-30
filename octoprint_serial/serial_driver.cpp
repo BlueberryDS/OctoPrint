@@ -370,10 +370,8 @@ public:
 
     ~InputSourceManager() {
         if (fileStream_) {
-            if (fileStream_) {
-                auto currentPos = ftell(fileStream_.get());
-                std::cerr << "Closing file stream at position: " << currentPos << std::endl;
-            }
+            auto currentPos = ftell(fileStream_.get());
+            std::cerr << "Closing file stream at position: " << currentPos << std::endl;
             fileStream_.reset(); // Close file stream
         }
     }
@@ -819,47 +817,49 @@ void processCommandQueue(SerialPort& serialPort, LineQueue& queue, InputSourceMa
 }
 
 int main(int argc, char* argv[]) {
-    Args args;
     try {
+        Args args;
+
         args = parseArguments(argc, argv);
-    } catch (const std::exception& e) {
-        return 1;
-    }
 
-    // Exit cleanly after --help
-    if (args.serialPortName.empty()) {
-        return 0;
-    }
-
-    InputSourceManager sourceManager(args);
-
-    if (!sourceManager) {
-        return 1;
-    }
-
-    SerialPort serialPort(args);
-    if (!serialPort.openPort()) {
-        return 1;
-    }
-
-    LineQueue commandQueue(args);
-
-    commandQueue.next() = "M115"; // Start with an initial GCode command to coordinate the line numbers
-    commandQueue.commit();
-    processCommandQueue(serialPort, commandQueue, sourceManager, args);
-
-
-    bool running = true;
-
-    while (running) {
-        if (!commandQueue && sourceManager.getNextLine(commandQueue.next())) {          
-            commandQueue.commit();
-        } else {
-            readSerialResponse(serialPort, commandQueue, sourceManager, true, args); // block if we are not reading new lines
+        // Exit cleanly after --help
+        if (args.serialPortName.empty()) {
+            return 0;
         }
-        
-        processCommandQueue(serialPort, commandQueue, sourceManager, args);
-    }
 
-    return 0;
+        InputSourceManager sourceManager(args);
+
+        if (!sourceManager) {
+            return 1;
+        }
+
+        SerialPort serialPort(args);
+        if (!serialPort.openPort()) {
+            return 1;
+        }
+
+        LineQueue commandQueue(args);
+
+        commandQueue.next() = "M115"; // Start with an initial GCode command to coordinate the line numbers
+        commandQueue.commit();
+        processCommandQueue(serialPort, commandQueue, sourceManager, args);
+
+
+        bool running = true;
+
+        while (running) {
+            if (!commandQueue && sourceManager.getNextLine(commandQueue.next())) {          
+                commandQueue.commit();
+            } else {
+                readSerialResponse(serialPort, commandQueue, sourceManager, true, args); // block if we are not reading new lines
+            }
+            
+            processCommandQueue(serialPort, commandQueue, sourceManager, args);
+        }
+
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << " (Exception type: " << typeid(e).name() << ")" << std::endl;
+        return 1;
+    }
 }
