@@ -13,6 +13,7 @@
 #include <charconv>
 #include <csignal>
 #include <atomic>
+#include <memory>
 
 // Structure to hold parsed arguments
 struct Args {
