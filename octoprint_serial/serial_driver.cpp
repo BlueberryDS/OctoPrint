@@ -16,6 +16,8 @@
 #include <array>
 #include <algorithm>
 #include <charconv>
+#include <csignal>
+#include <atomic>
 
 // Structure to hold parsed arguments
 struct Args {
@@ -824,7 +826,19 @@ void processCommandQueue(SerialPort& serialPort, LineQueue& queue, InputSourceMa
     }
 }
 
+std::atomic<bool> running{false};
+
+void signalHandler(int signal) {
+    if (signal == SIGINT || signal == SIGTERM) {
+        running = false;
+    }
+}
+
 int main(int argc, char* argv[]) {
+    // Register signal handlers
+    std::signal(SIGINT, signalHandler);
+    std::signal(SIGTERM, signalHandler);
+
     try {
         Args args;
 
@@ -852,9 +866,6 @@ int main(int argc, char* argv[]) {
         commandQueue.commit();
         processCommandQueue(serialPort, commandQueue, sourceManager, args);
 
-
-        bool running = true;
-
         while (running) {
             if (!commandQueue && sourceManager.getNextLine(commandQueue.next())) {          
                 commandQueue.commit();
@@ -864,6 +875,8 @@ int main(int argc, char* argv[]) {
             
             processCommandQueue(serialPort, commandQueue, sourceManager, args);
         }
+
+        std::cerr << "Termination signal received. Cleaning up..." << std::endl;
 
         return 0;
     } catch (const std::exception& e) {
