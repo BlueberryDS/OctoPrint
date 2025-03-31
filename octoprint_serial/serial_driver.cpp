@@ -826,7 +826,7 @@ void processCommandQueue(SerialPort& serialPort, LineQueue& queue, InputSourceMa
     }
 }
 
-std::atomic<bool> running{false};
+std::atomic<bool> running{true};
 
 void signalHandler(int signal) {
     if (signal == SIGINT || signal == SIGTERM) {
