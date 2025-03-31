@@ -653,8 +653,7 @@ public:
 };
 
 
-template <typename T = int>
-T extractNumberAfterPrefix(const std::string& str, const std::string& prefix) {
+int extractNumberAfterPrefix(const std::string& str, const std::string& prefix) {
     size_t pos = str.find(prefix);
     if (pos != std::string::npos) {
         pos += prefix.length();
@@ -662,19 +661,19 @@ T extractNumberAfterPrefix(const std::string& str, const std::string& prefix) {
         size_t end = pos;
         while (end < str.size() && std::isdigit(str[end])) ++end;
         if (end - pos > 0 && end - pos <= 10) { // Check if the number is within a reasonable range
-            T value = 0;
+            int value = 0;
             auto [ptr, ec] = std::from_chars(str.data() + pos, str.data() + end, value);
             if (ec == std::errc::invalid_argument) {
                 std::cerr << "Error: Invalid argument while converting string to number" << std::endl;
-                return static_cast<T>(-1);
+                return -1;
             } else if (ec == std::errc::result_out_of_range) {
                 std::cerr << "Error: Number out of range while converting string to number" << std::endl;
-                return static_cast<T>(-1);
+                return -1;
             }
             return value;
         }
     }
-    return static_cast<T>(-1);
+    return -1;
 }
 
 void readSerialResponse(SerialPort& serialPort, LineQueue & queue, InputSourceManager & inputManager, bool blocking, const Args& args) {
