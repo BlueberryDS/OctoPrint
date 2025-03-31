@@ -526,6 +526,7 @@ private:
     const char* M110 = "M110"; // with checksum
     size_t resendsToIgnore = 0;
     size_t lastRequestedResendLine = 0;
+    const size_t acknowledgeMissedAllowance = 10;
 
     void addChecksum(std::string& command, size_t lineNumber) {
         std::string lineNumberStr = "N" + std::to_string(lineNumber) + " ";
@@ -600,6 +601,13 @@ public:
     }
 
     void acknowledge(size_t lineNo, int stepperBuffer, int asciiBuffer) {
+        // Ignore out-of-order acknowledgments in case we have some sort of bug.
+        if (lineNo < lineAcknowledged || lineNo > lineAcknowledged + acknowledgeMissedAllowance) {
+            std::cerr << "Error: Acknowledged line " << lineNo 
+                      << " does not follow the current previous ack " << lineAcknowledged << std::endl;
+            return;
+        }
+
         lineAcknowledged=lineNo;
 
         if (lineNo >= lastRequestedResendLine) { // If we've successfully processed the resend, then we can reset the resend counter
