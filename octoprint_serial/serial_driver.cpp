@@ -12,7 +12,6 @@
 #include <array>
 #include <charconv>
 #include <csignal>
-#include <atomic>
 #include <memory>
 
 // Structure to hold parsed arguments
@@ -822,7 +821,7 @@ void processCommandQueue(SerialPort& serialPort, LineQueue& queue, InputSourceMa
     }
 }
 
-std::atomic<bool> running{true};
+volatile bool running{true};
 
 void signalHandler(int signal) {
     if (signal == SIGINT || signal == SIGTERM) {
